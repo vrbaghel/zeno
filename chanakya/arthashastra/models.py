@@ -98,18 +98,11 @@ class AdaptorTimingMetrics(BaseModel):
     time_to_first_token_ms: int | None = None
 
 
-class TokenEstimationMethod(str, Enum):
-    exact = "exact"
-    approximate = "approximate"
-    unavailable = "unavailable"
-
-
 class AdaptorTokenMetrics(BaseModel):
     input: int | None = None
     output: int | None = None
     total: int | None = None
-    estimated: bool = True
-    estimation_method: TokenEstimationMethod = TokenEstimationMethod.unavailable
+    deviation: str | None = None
 
 
 class AdaptorArtifactMetrics(BaseModel):

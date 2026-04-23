@@ -20,7 +20,6 @@ from chanakya.arthashastra.models import (
     AdaptorResponseStatus,
     AdaptorTimingMetrics,
     AdaptorTokenMetrics,
-    TokenEstimationMethod,
 )
 from chanakya.arthashastra.utils.process import collect_stream, spawn, terminate, utc_now
 from chanakya.arthashastra.utils.tokenizer import count as count_tokens
@@ -86,6 +85,7 @@ class GeminiAdaptor(BaseAdaptor):
     name = "gemini"
     provider = "gemini"
     mode = "adapter"
+    deviation = "±15%"
 
     def __init__(self, *, config: GeminiAdaptorConfig | None = None) -> None:
         self._config = config or GeminiAdaptorConfig()
@@ -119,12 +119,7 @@ class GeminiAdaptor(BaseAdaptor):
             )
 
         prompt = _serialize_request_to_prompt(request)
-        input_tok = count_tokens(
-            prompt,
-            provider=self.provider,
-            model=self._config.model,
-            sp_model_path=self._config.sp_model_path,
-        )
+        input_tok = count_tokens(prompt)
 
         try:
             process = await spawn("gemini", [])
@@ -220,29 +215,13 @@ class GeminiAdaptor(BaseAdaptor):
             }
         )
 
-        out_tok = count_tokens(
-            raw_out,
-            provider=self.provider,
-            model=self._config.model,
-            sp_model_path=self._config.sp_model_path,
-        )
+        out_tok = count_tokens(raw_out)
 
         tokens = AdaptorTokenMetrics(
-            input=input_tok.tokens,
-            output=out_tok.tokens,
-            total=(input_tok.tokens + out_tok.tokens)
-            if input_tok.tokens is not None and out_tok.tokens is not None
-            else None,
-            estimated=not (
-                input_tok.method == TokenEstimationMethod.exact
-                and out_tok.method == TokenEstimationMethod.exact
-            ),
-            estimation_method=(
-                TokenEstimationMethod.exact
-                if input_tok.method == TokenEstimationMethod.exact
-                and out_tok.method == TokenEstimationMethod.exact
-                else TokenEstimationMethod.unavailable
-            ),
+            input=input_tok,
+            output=out_tok,
+            total=input_tok + out_tok,
+            deviation=self.deviation,
         )
 
         artifact_metrics = AdaptorArtifactMetrics(
