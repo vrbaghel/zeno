@@ -32,19 +32,13 @@ class AdaptorRequestPayload(BaseModel):
     tools: list[dict] = Field(default_factory=list)
 
 
-class AdaptorRequestConfig(BaseModel):
-    max_tokens: int | None = None
-    temperature: float | None = None
-    timeout_seconds: float | None = 60.0
-
-
 class AdaptorRequest(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     session_id: UUID = Field(default_factory=uuid4)
     agent_id: str
     created_at: datetime = Field(default_factory=utc_now)
     payload: AdaptorRequestPayload = Field(default_factory=AdaptorRequestPayload)
-    config: AdaptorRequestConfig = Field(default_factory=AdaptorRequestConfig)
+    timeout_seconds: float | None = 60.0
 
 
 class AdaptorResponseStatus(str, Enum):
@@ -56,6 +50,12 @@ class AdaptorResponseStatus(str, Enum):
 
 class AdaptorResponsePayload(BaseModel):
     messages: list[AdaptorMessage] = Field(default_factory=list)
+
+
+class AgentResponse(BaseModel):
+    status: Literal["success", "error", "truncated"]
+    payload: AdaptorResponsePayload = Field(default_factory=AdaptorResponsePayload)
+    artifacts: AdaptorArtifacts = Field(default_factory=AdaptorArtifacts)
 
 
 class AdaptorResponse(BaseModel):

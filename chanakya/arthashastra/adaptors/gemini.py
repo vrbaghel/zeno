@@ -13,6 +13,7 @@ from chanakya.arthashastra.models import (
     AdaptorError,
     AdaptorErrorCode,
     AdaptorMessage,
+    AgentResponse,
     AdaptorMetrics,
     AdaptorRequest,
     AdaptorResponse,
@@ -45,12 +46,7 @@ You must respond only in the following JSON format. Do not include
 any text outside of this JSON block:
 
 {
-  "id": "<uuid>",
-  "request_id": "<request_id>",
-  "session_id": "<session_id>",
-  "agent_id": "<agent_id>",
   "status": "success | error | truncated",
-  "created_at": "<utc timestamp>",
   "payload": {
     "messages": [{ "role": "assistant", "content": "..." }]
   },
@@ -67,12 +63,29 @@ any text outside of this JSON block:
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    # Gemini CLI can print pre/post text. Try progressively from the last '{'.
+    starts = [i for i, ch in enumerate(text) if ch == "{"]
+    if not starts:
         raise ValueError("no JSON object found in output")
-    candidate = text[start : end + 1]
-    return json.loads(candidate)
+
+    last_err: Exception | None = None
+    end = text.rfind("}")
+    if end == -1:
+        raise ValueError("no JSON object found in output")
+
+    for start in reversed(starts):
+        if start >= end:
+            continue
+        candidate = text[start : end + 1]
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise ValueError(f"no valid JSON object found in output ({last_err})")
 
 
 @dataclass(frozen=True)
@@ -122,7 +135,7 @@ class GeminiAdaptor(BaseAdaptor):
         input_tok = count_tokens(prompt)
 
         try:
-            process = await spawn("gemini", [])
+            process = await spawn("gemini", ["--yolo"])
         except Exception as e:
             return AdaptorError(
                 request_id=request.id,
@@ -152,7 +165,7 @@ class GeminiAdaptor(BaseAdaptor):
                 recoverable=True,
             )
 
-        timeout_s = request.config.timeout_seconds or 60.0
+        timeout_s = request.timeout_seconds or 60.0
 
         try:
             stdout_task = collect_stream(process.stdout)
@@ -189,7 +202,7 @@ class GeminiAdaptor(BaseAdaptor):
 
         try:
             data = _extract_json_object(raw_out)
-            resp = AdaptorResponse.model_validate(data)
+            agent_resp = AgentResponse.model_validate(data)
         except Exception as e:
             detail = raw_err or raw_out
             snippet = (detail[:500] + "…") if len(detail) > 500 else detail
@@ -201,18 +214,18 @@ class GeminiAdaptor(BaseAdaptor):
                 recoverable=True,
             )
 
-        # Ensure request linkage (don't trust the model output).
-        resp = resp.model_copy(
-            update={
-                "request_id": request.id,
-                "session_id": request.session_id,
-                "agent_id": request.agent_id,
-                "payload": resp.payload
-                if resp.payload.messages
-                else AdaptorResponsePayload(
-                    messages=[AdaptorMessage(role="assistant", content="")]
-                ),
-            }
+        payload = (
+            agent_resp.payload
+            if agent_resp.payload.messages
+            else AdaptorResponsePayload(messages=[AdaptorMessage(role="assistant", content="")])
+        )
+        resp = AdaptorResponse(
+            request_id=request.id,
+            session_id=request.session_id,
+            agent_id=request.agent_id,
+            status=AdaptorResponseStatus(agent_resp.status),
+            payload=payload,
+            artifacts=agent_resp.artifacts,
         )
 
         out_tok = count_tokens(raw_out)
