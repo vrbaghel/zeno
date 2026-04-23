@@ -11,9 +11,12 @@ requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Vinayak Baghel" }]
 dependencies = [
+  "aiosqlite>=0.20.0",
+  "alembic>=1.13.0",
   "pydantic>=2.0.0",
   "pydantic-settings>=2.0.0",
   "rich>=13.0.0",
+  "sqlalchemy[asyncio]>=2.0.0",
   "tiktoken>=0.7.0",
   "typer>=0.12.0",
 ]
@@ -23,4 +26,8 @@ chanakya = "chanakya.cli.main:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["chanakya"]
+
+# Include Alembic template file in the built wheel
+[tool.hatch.build.targets.wheel.force-include]
+"chanakya/db/migrations/script.py.mako" = "chanakya/db/migrations/script.py.mako"
 
