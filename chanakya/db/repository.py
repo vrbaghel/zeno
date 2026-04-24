@@ -34,6 +34,7 @@ from chanakya.db.models import (
     TaskStatus,
     TaskType,
 )
+from chanakya.core.enums import OrchestratorState
 
 # ---------------------------------------------------------------------------
 # Internals
@@ -93,6 +94,26 @@ async def update_session_status(session_id: uuid.UUID, status: SessionStatus) ->
         s.status = status
         s.updated_at = _now()
         await db.commit()
+
+
+async def update_orchestrator_state(session_id: uuid.UUID, state: OrchestratorState) -> None:
+    factory = get_session_factory()
+    async with factory() as db:
+        s = await db.get(DbSession, session_id)
+        if s is None:
+            raise KeyError("session not found")
+        s.orchestrator_state = state
+        s.updated_at = _now()
+        await db.commit()
+
+
+async def get_orchestrator_state(session_id: uuid.UUID) -> OrchestratorState:
+    factory = get_session_factory()
+    async with factory() as db:
+        s = await db.get(DbSession, session_id)
+        if s is None:
+            raise KeyError("session not found")
+        return s.orchestrator_state
 
 
 # ---------------------------------------------------------------------------

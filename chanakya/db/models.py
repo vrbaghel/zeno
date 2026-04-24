@@ -20,6 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from chanakya.core.enums import OrchestratorState
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -139,6 +140,11 @@ class DbSession(Base):
     mode: Mapped[SessionMode] = mapped_column(
         Enum(SessionMode, values_callable=_values, native_enum=False, length=16),
         nullable=False,
+    )
+    orchestrator_state: Mapped[OrchestratorState] = mapped_column(
+        Enum(OrchestratorState, native_enum=False, length=32),
+        nullable=False,
+        default=OrchestratorState.INITIALIZING,
     )
     working_directory: Mapped[str] = mapped_column(Text, nullable=False)
     raw_input: Mapped[str] = mapped_column(Text, nullable=False)
