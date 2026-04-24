@@ -204,6 +204,8 @@ class DbTask(Base):
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     parallel_group: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    worktree_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     checkpoint_before: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 

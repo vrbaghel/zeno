@@ -265,6 +265,41 @@ async def complete_task(task_id: uuid.UUID, result_summary: str) -> None:
         await db.commit()
 
 
+async def assign_worktree(task_id: uuid.UUID, worktree_path: str, branch_name: str) -> None:
+    factory = get_session_factory()
+    async with factory() as db:
+        t = await db.get(DbTask, task_id)
+        if t is None:
+            raise KeyError("task not found")
+        t.worktree_path = worktree_path
+        t.branch_name = branch_name
+        t.updated_at = _now()
+        await db.commit()
+
+
+async def clear_worktree(task_id: uuid.UUID) -> None:
+    factory = get_session_factory()
+    async with factory() as db:
+        t = await db.get(DbTask, task_id)
+        if t is None:
+            raise KeyError("task not found")
+        t.worktree_path = None
+        t.branch_name = None
+        t.updated_at = _now()
+        await db.commit()
+
+
+async def get_tasks_with_worktrees(session_id: uuid.UUID) -> list[DbTask]:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(
+            select(DbTask)
+            .where(DbTask.session_id == session_id, DbTask.worktree_path.is_not(None))
+            .order_by(DbTask.created_at.asc())
+        )
+        return list(r.scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # Agents
 # ---------------------------------------------------------------------------
