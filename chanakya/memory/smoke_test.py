@@ -39,6 +39,7 @@ async def main() -> None:
             session_id=uuid.uuid4(),
             task_id=uuid.uuid4(),
             agent_type="coding",
+            agent_id="demo-agent",
             content=MemDiaryEntry(
                 summary="Implemented login endpoint and added token validation.",
                 decisions=["Use JWT for stateless auth."],
@@ -49,7 +50,7 @@ async def main() -> None:
             ),
         )
 
-        save_drawer(wd, drawer)
+        save_drawer(wd, drawer, agent_id="demo-agent")
 
         hits = search_drawers(wd, query="token validation login", wing=wing.name, limit=5)
         assert hits, "expected at least one search hit"

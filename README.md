@@ -123,6 +123,7 @@ Phase 4 adds an embedded **ChromaDB** memory layer under `chanakya/memory/` that
 | **`drawer`** | One semantic-searchable entry stored in ChromaDB (typically one per completed task). |
 | **`diary_entry`** | A structured briefing authored by an agent after task completion; stored as the drawer document. |
 | **`MemContext`** | Assembled context (session summary + relevant drawers + agent history) suitable for prompt injection. |
+| **`agent_id`** | The agent instance identifier stored in drawer metadata, used to scope history retrieval to a specific agent instance when desired. |
 
 ### Persistence
 
@@ -143,6 +144,11 @@ Runs against a temporary SQLite file and a temporary working directory; saves on
 ```bash
 python -m chanakya.memory.smoke_test
 ```
+
+### Retrieval notes
+
+- **`search_drawers(..., room=None)`**: `room` is optional and only applied as a filter when explicitly provided.
+- **`get_agent_history(...)`**: history can be scoped broadly (by `agent_type`) or narrowly (by `agent_id`), and always includes the `wing` filter.
 
 ### Dependencies
 

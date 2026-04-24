@@ -129,11 +129,12 @@ class GeminiAdaptor(BaseAdaptor):
         self, request: AdaptorRequest
     ) -> tuple[AdaptorResponse, AdaptorMetrics] | AdaptorError:
         queued_at = utc_now()
+        agent_id = request.agent_id
 
         if not self.probe():
             return AdaptorError(
                 request_id=request.id,
-                agent_id=request.agent_id,
+                agent_id=agent_id,
                 code=AdaptorErrorCode.ADAPTOR_NOT_FOUND,
                 message="Gemini CLI not found on PATH (expected `gemini`).",
                 recoverable=False,
@@ -147,7 +148,7 @@ class GeminiAdaptor(BaseAdaptor):
         except Exception as e:
             return AdaptorError(
                 request_id=request.id,
-                agent_id=request.agent_id,
+                agent_id=agent_id,
                 code=AdaptorErrorCode.ADAPTOR_SPAWN_FAILED,
                 message=f"Failed to spawn gemini: {e}",
                 recoverable=True,
@@ -167,7 +168,7 @@ class GeminiAdaptor(BaseAdaptor):
             await terminate(process)
             return AdaptorError(
                 request_id=request.id,
-                agent_id=request.agent_id,
+                agent_id=agent_id,
                 code=AdaptorErrorCode.ADAPTOR_SPAWN_FAILED,
                 message=f"Failed to write prompt to gemini stdin: {e}",
                 recoverable=True,
@@ -187,7 +188,7 @@ class GeminiAdaptor(BaseAdaptor):
             await terminate(process)
             return AdaptorError(
                 request_id=request.id,
-                agent_id=request.agent_id,
+                agent_id=agent_id,
                 code=AdaptorErrorCode.ADAPTOR_TIMEOUT,
                 message=f"Gemini adaptor timed out after {timeout_s:.1f}s.",
                 recoverable=True,
@@ -196,7 +197,7 @@ class GeminiAdaptor(BaseAdaptor):
             await terminate(process)
             return AdaptorError(
                 request_id=request.id,
-                agent_id=request.agent_id,
+                agent_id=agent_id,
                 code=AdaptorErrorCode.UNKNOWN,
                 message=f"Unexpected error while running gemini: {e}",
                 recoverable=True,
@@ -216,7 +217,7 @@ class GeminiAdaptor(BaseAdaptor):
             snippet = (detail[:500] + "…") if len(detail) > 500 else detail
             return AdaptorError(
                 request_id=request.id,
-                agent_id=request.agent_id,
+                agent_id=agent_id,
                 code=AdaptorErrorCode.ADAPTOR_PARSE_ERROR,
                 message=f"Failed to parse gemini output as AdaptorResponse: {e}. Output: {snippet}",
                 recoverable=True,
@@ -234,7 +235,7 @@ class GeminiAdaptor(BaseAdaptor):
         resp = AdaptorResponse(
             request_id=request.id,
             session_id=request.session_id,
-            agent_id=request.agent_id,
+            agent_id=agent_id,
             status=AdaptorResponseStatus(agent_resp.status),
             payload=payload,
             artifacts=agent_resp.artifacts,
@@ -268,7 +269,7 @@ class GeminiAdaptor(BaseAdaptor):
             timing=timing,
             tokens=tokens,
             artifacts=artifact_metrics,
-            agent_id=request.agent_id,
+            agent_id=agent_id,
             mode=self.mode,
             provider=self.provider,
             model=self._config.model,

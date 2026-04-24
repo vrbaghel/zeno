@@ -75,17 +75,20 @@ def _drawer_from_row(
         session_id=UUID(str(md.get("session_id"))),
         task_id=UUID(str(md.get("task_id"))),
         agent_type=str(md.get("agent_type") or ""),
+        agent_id=str(md.get("agent_id") or ""),
         created_at=created_at or datetime.now(timezone.utc),
         content=diary,
     )
 
 
-def save_drawer(working_directory: str, drawer: MemDrawer) -> None:
+def save_drawer(working_directory: str, drawer: MemDrawer, agent_id: str) -> None:
     col = _collection(working_directory, wing=drawer.wing)
+    md = drawer.to_metadata()
+    md["agent_id"] = agent_id
     col.add(
         ids=[str(drawer.id)],
         documents=[drawer.to_document()],
-        metadatas=[drawer.to_metadata()],
+        metadatas=[md],
     )
 
 
@@ -131,11 +134,23 @@ def search_drawers(
 
 
 def get_agent_history(
-    working_directory: str, wing: str, agent_type: str, limit: int = 3
+    working_directory: str,
+    wing: str,
+    agent_type: str | None = None,
+    agent_id: str | None = None,
+    room: str | None = None,
+    limit: int = 3,
 ) -> list[MemDrawer]:
     col = _collection(working_directory, wing=wing)
+    where: dict[str, Any] = {"wing": wing}
+    if agent_type is not None:
+        where["agent_type"] = agent_type
+    if agent_id is not None:
+        where["agent_id"] = agent_id
+    if room is not None:
+        where["room"] = room
     res = col.get(
-        where=_where_eq({"wing": wing, "agent_type": agent_type}),
+        where=_where_eq(where),
         limit=limit,
         include=["documents", "metadatas"],
     )

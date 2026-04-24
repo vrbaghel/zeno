@@ -37,6 +37,7 @@ def build_context(
     wing: MemWing,
     task_description: str,
     agent_type: str,
+    agent_id: str,
     session_id: UUID,
     current_session_tasks,
 ) -> MemContext:
@@ -48,6 +49,6 @@ def build_context(
         room=None,
         limit=5,
     )
-    history = get_agent_history(working_directory, wing=wing.name, agent_type=agent_type, limit=3)
+    history = get_agent_history(working_directory, wing=wing.name, agent_id=agent_id, limit=3)
     return MemContext(session_summary=session_summary, relevant_drawers=relevant, agent_history=history)
 

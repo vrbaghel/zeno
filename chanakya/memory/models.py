@@ -61,6 +61,7 @@ class MemDrawer(BaseModel):
     session_id: UUID
     task_id: UUID
     agent_type: str
+    agent_id: str
     created_at: datetime = Field(default_factory=utc_now)
     content: MemDiaryEntry
 
@@ -74,6 +75,7 @@ class MemDrawer(BaseModel):
             "session_id": str(self.session_id),
             "task_id": str(self.task_id),
             "agent_type": self.agent_type,
+            "agent_id": self.agent_id,
             "created_at": self.created_at.isoformat(),
         }
 
