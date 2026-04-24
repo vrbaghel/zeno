@@ -154,3 +154,37 @@ python -m chanakya.memory.smoke_test
 
 Memory-layer runtime dependencies are declared in `pyproject.toml` (notably `chromadb`).
 
+## Phase 5 (lead agent contracts)
+
+Phase 5 formalizes the **lead agent request/response** contracts and adds a persisted orchestrator state enum. No orchestrator execution logic is implemented in this phase—only the models and validation that later phases will build on.
+
+### Contracts
+
+Defined in `chanakya/arthashastra/models.py`:
+
+- **Clarification flow**:
+  - `ClarificationQuestion`
+  - `ClarificationResponse` (`type="clarification"`)
+- **Execution planning**:
+  - `RoomDefinition`
+  - `TaskDefinition`
+  - `ExecutionPlanResponse` (`type="execution_plan"`, includes required `diary_entry`)
+- **Lead agent request**:
+  - `LeadAgentRequest` (includes `memory_context` as a lightweight `AgentContext` mirror model; the orchestrator converts `MemContext → AgentContext`)
+- **Validation**:
+  - `validate_lead_response(...) -> list[str]` enforces discriminator correctness, dependency/room consistency, parallel group format, required diary entry, and rejects clarification responses in YOLO mode.
+
+### Orchestrator state (persisted)
+
+- **Enum**: `chanakya/core/enums.py` defines `OrchestratorState` (shared primitive).
+- **DB**: `sessions.orchestrator_state` is stored in SQLite with default `INITIALIZING`.
+- **Repository helpers**:
+  - `update_orchestrator_state(session_id, state)`
+  - `get_orchestrator_state(session_id)`
+
+### Smoke test (contracts)
+
+```bash
+python -m chanakya.arthashastra.smoke_test
+```
+
