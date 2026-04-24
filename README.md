@@ -188,3 +188,27 @@ Defined in `chanakya/arthashastra/models.py`:
 python -m chanakya.arthashastra.smoke_test
 ```
 
+## Phase 6 (bare orchestrator)
+
+Phase 6 introduces the first **end-to-end orchestrator** under `chanakya/orchestrator/`. It is intentionally minimal: one session, one task, one agent, one worktree, one merge.
+
+### What it does
+
+- Initializes the session (creates `./.chanakya/`, ensures git, initializes the memory wing, creates SQLite session).
+- Creates a git worktree under `./.chanakya/worktrees/<session_id>/<task_id>` and a branch `chanakya/<session_id>/<task_id>`.
+- Dispatches a single “test agent” via the Gemini adaptor, saves metrics + artifacts to SQLite, and saves a memory drawer to ChromaDB.
+- Merges the worktree branch back to the current branch, then cleans up the worktree and branch.
+- Marks the session as completed (or failed on first error).
+
+### Smoke test (orchestrator)
+
+Run from the repository root, using the repo-local venv:
+
+```bash
+./.venv/bin/python -m chanakya.orchestrator.smoke_phase6
+```
+
+Optional settings:
+
+- `ORCHESTRATOR_TIMEOUT_SECONDS`: overrides adaptor dispatch timeout for the orchestrator (default: 60).
+

@@ -17,6 +17,9 @@ class ChanakyaSettings(BaseSettings):
     Phase 1 settings:
     - mode: optional
     - API keys: optional (required only if mode resolves to api)
+
+    Phase 6 settings:
+    - orchestrator_timeout_seconds: optional
     """
 
     model_config = SettingsConfigDict(extra="ignore")
@@ -28,6 +31,14 @@ class ChanakyaSettings(BaseSettings):
     gemini_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    )
+
+    orchestrator_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices(
+            "ORCHESTRATOR_TIMEOUT_SECONDS",
+            "CHANAKYA_ORCHESTRATOR_TIMEOUT_SECONDS",
+        ),
     )
 
 
