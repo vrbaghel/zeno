@@ -18,6 +18,8 @@ from chanakya.db.models import (
     DbTask,
     DbTaskDependency,
     DbTaskMetrics,
+    DbWing,
+    DbRoom,
 )
 
 __all__ = [
@@ -33,6 +35,8 @@ __all__ = [
     "DbTaskMetrics",
     "DbCheckpoint",
     "DbArtifact",
+    "DbWing",
+    "DbRoom",
     "get_database_url",
     "get_engine",
     "get_session_factory",

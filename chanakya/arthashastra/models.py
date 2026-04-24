@@ -52,10 +52,20 @@ class AdaptorResponsePayload(BaseModel):
     messages: list[AdaptorMessage] = Field(default_factory=list)
 
 
+class DiaryEntry(BaseModel):
+    summary: str
+    decisions: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    dependencies: list[str] = Field(default_factory=list)
+    open_issues: list[str] = Field(default_factory=list)
+    room: str
+
+
 class AgentResponse(BaseModel):
     status: Literal["success", "error", "truncated"]
     payload: AdaptorResponsePayload = Field(default_factory=AdaptorResponsePayload)
     artifacts: AdaptorArtifacts = Field(default_factory=AdaptorArtifacts)
+    diary_entry: DiaryEntry | None = None
 
 
 class AdaptorResponse(BaseModel):

@@ -13,6 +13,7 @@ authors = [{ name = "Vinayak Baghel" }]
 dependencies = [
   "aiosqlite>=0.20.0",
   "alembic>=1.13.0",
+  "chromadb>=0.5.0",
   "pydantic>=2.0.0",
   "pydantic-settings>=2.0.0",
   "rich>=13.0.0",

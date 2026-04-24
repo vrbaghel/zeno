@@ -110,3 +110,41 @@ python -m chanakya.db.smoke_test
 
 Database-related runtime dependencies are declared in `pyproject.toml` (`sqlalchemy[asyncio]`, `aiosqlite`, `alembic`).
 
+## Phase 4 (agent memory layer)
+
+Phase 4 adds an embedded **ChromaDB** memory layer under `chanakya/memory/` that can persist and retrieve agent-authored context across sessions.
+
+### Terminology
+
+| Term | Meaning |
+|------|---------|
+| **`wing`** | A per-project namespace, derived from the working directory name (slugified) and stored in SQLite (`wings` table). |
+| **`room`** | A lead-agent-defined topic area under a wing (e.g. `authentication`, `frontend`), stored in SQLite (`rooms` table). |
+| **`drawer`** | One semantic-searchable entry stored in ChromaDB (typically one per completed task). |
+| **`diary_entry`** | A structured briefing authored by an agent after task completion; stored as the drawer document. |
+| **`MemContext`** | Assembled context (session summary + relevant drawers + agent history) suitable for prompt injection. |
+
+### Persistence
+
+- **SQLite**: wings/rooms are stored in the relational DB.
+- **ChromaDB**: embedded local persistence under:
+  - **`<cwd>/.chanakya/memory/chroma/`**
+- **Collections**: one collection per wing, named:
+  - **`chanakya_<wingSlug>`**
+
+### Adapter contract changes
+
+`AgentResponse` now supports an optional `diary_entry` block. The Gemini adapter prompts agents to emit it and logs a warning if it is missing (missing diary entries are recoverable).
+
+### Smoke test (memory)
+
+Runs against a temporary SQLite file and a temporary working directory; saves one drawer and verifies retrieval:
+
+```bash
+python -m chanakya.memory.smoke_test
+```
+
+### Dependencies
+
+Memory-layer runtime dependencies are declared in `pyproject.toml` (notably `chromadb`).
+

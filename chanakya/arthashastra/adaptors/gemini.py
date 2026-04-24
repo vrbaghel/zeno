@@ -54,6 +54,14 @@ any text outside of this JSON block:
     "created": [],
     "updated": [],
     "deleted": []
+  },
+  "diary_entry": {
+    "summary": "...",
+    "decisions": ["..."],
+    "assumptions": ["..."],
+    "dependencies": ["..."],
+    "open_issues": ["..."],
+    "room": "..."
   }
 }
 """.strip()
@@ -213,6 +221,10 @@ class GeminiAdaptor(BaseAdaptor):
                 message=f"Failed to parse gemini output as AdaptorResponse: {e}. Output: {snippet}",
                 recoverable=True,
             )
+
+        if agent_resp.diary_entry is None:
+            # Diary entries are recoverable (useful but not required).
+            print("warning: gemini response missing diary_entry")
 
         payload = (
             agent_resp.payload

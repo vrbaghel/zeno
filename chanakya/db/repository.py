@@ -25,6 +25,8 @@ from chanakya.db.models import (
     DbTask,
     DbTaskDependency,
     DbTaskMetrics,
+    DbRoom,
+    DbWing,
     PlanStatus,
     Provider,
     SessionMode,
@@ -150,6 +152,74 @@ async def revise_plan(plan_id: uuid.UUID) -> DbExecutionPlan:
         await db.commit()
         await db.refresh(new)
         return new
+
+
+# ---------------------------------------------------------------------------
+# Wings + rooms
+# ---------------------------------------------------------------------------
+
+
+async def create_wing(name: str, path: str, *, id: uuid.UUID | None = None) -> DbWing:
+    factory = get_session_factory()
+    async with factory() as db:
+        w = DbWing(id=id or uuid.uuid4(), name=name, path=path, created_at=_now())
+        db.add(w)
+        await db.commit()
+        await db.refresh(w)
+        return w
+
+
+async def get_wing_by_path(path: str) -> DbWing | None:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(select(DbWing).where(DbWing.path == path).limit(1))
+        return r.scalar_one_or_none()
+
+
+async def get_wing(wing_id: uuid.UUID) -> DbWing | None:
+    factory = get_session_factory()
+    async with factory() as db:
+        return await db.get(DbWing, wing_id)
+
+
+async def create_room(
+    wing_id: uuid.UUID, name: str, description: str, *, id: uuid.UUID | None = None
+) -> DbRoom:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = DbRoom(
+            id=id or uuid.uuid4(),
+            wing_id=wing_id,
+            name=name,
+            description=description,
+            created_at=_now(),
+        )
+        db.add(r)
+        await db.commit()
+        await db.refresh(r)
+        return r
+
+
+async def get_rooms(wing_id: uuid.UUID) -> list[DbRoom]:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(
+            select(DbRoom).where(DbRoom.wing_id == wing_id).order_by(DbRoom.created_at.asc())
+        )
+        return list(r.scalars().all())
+
+
+async def get_room_by_name(wing_id: uuid.UUID, name: str) -> DbRoom | None:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(
+            select(DbRoom).where(DbRoom.wing_id == wing_id, DbRoom.name == name).limit(1)
+        )
+        return r.scalar_one_or_none()
+
+
+async def room_exists(wing_id: uuid.UUID, name: str) -> bool:
+    return (await get_room_by_name(wing_id, name)) is not None
 
 
 # ---------------------------------------------------------------------------
