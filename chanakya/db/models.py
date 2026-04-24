@@ -223,6 +223,33 @@ class DbTaskDependency(Base):
     )
 
 
+class DbAgent(Base):
+    __tablename__ = "agents"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    type: Mapped[AgentType] = mapped_column(
+        "type",
+        Enum(AgentType, values_callable=_values, native_enum=False, length=32),
+        nullable=False,
+    )
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[Provider] = mapped_column(
+        Enum(Provider, values_callable=_values, native_enum=False, length=32), nullable=False
+    )
+    mode: Mapped[AgentMode] = mapped_column(
+        Enum(AgentMode, values_callable=_values, native_enum=False, length=32), nullable=False
+    )
+
+    assignments: Mapped[list["DbAgentAssignment"]] = relationship(back_populates="agent")
+
+
 class DbAgentAssignment(Base):
     __tablename__ = "agent_assignments"
 
@@ -233,26 +260,21 @@ class DbAgentAssignment(Base):
     session_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    agent_type: Mapped[AgentType] = mapped_column(
-        Enum(AgentType, values_callable=_values, native_enum=False, length=32),
-        nullable=False,
-    )
-    provider: Mapped[Provider] = mapped_column(
-        Enum(Provider, values_callable=_values, native_enum=False, length=32), nullable=False
-    )
-    mode: Mapped[AgentMode] = mapped_column(
-        Enum(AgentMode, values_callable=_values, native_enum=False, length=32), nullable=False
-    )
     status: Mapped[AssignmentStatus] = mapped_column(
         Enum(AssignmentStatus, values_callable=_values, native_enum=False, length=32),
         nullable=False,
         default=AssignmentStatus.assigned,
     )
+
+    agent: Mapped["DbAgent"] = relationship(back_populates="assignments")
 
 
 class DbTaskMetrics(Base):

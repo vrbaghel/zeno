@@ -9,6 +9,7 @@ from chanakya.db.engine import (
 )
 from chanakya.db.models import (
     Base,
+    DbAgent,
     DbAgentAssignment,
     DbArtifact,
     DbCheckpoint,
@@ -24,6 +25,7 @@ __all__ = [
     "create_all_tables",
     "get_async_session",
     "DbSession",
+    "DbAgent",
     "DbExecutionPlan",
     "DbTask",
     "DbTaskDependency",

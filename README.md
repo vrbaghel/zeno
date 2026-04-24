@@ -57,11 +57,18 @@ Phase 3 adds a **SQLite** persistence layer under `chanakya/db/`, exposed throug
 | **`execution_plans`** | One decomposition graph per plan revision; linked to a session. Revisions increment when a plan is revised. |
 | **`tasks`** | Atomic work units (title, description, type, status, priority, optional parallel group, HITL checkpoint flag, result summary). |
 | **`task_dependencies`** | Directed edges: `task_id` depends on `depends_on_task_id`. |
-| **`agent_assignments`** | Which agent run handled a task (supports retries / different agents over time). |
+| **`agents`** | Registered agents: stable `name`, `type` (lead / coding / …), `system_prompt`, `provider`, `mode` (`adapter` \| `api`). |
+| **`agent_assignments`** | Links a **task** to an **`agents`** row for one dispatch attempt (`started_at` / `completed_at`, assignment status). Provider/mode/type live on `agents`, not duplicated here. |
 | **`task_metrics`** | Token and timing counts (and artifact counts) attached to a **completed** assignment row. |
 | **`checkpoints`** | HITL checkpoint history (`presented` / `response` JSON payloads). |
 | **`artifacts`** | File paths touched on disk, derived from adaptor artifact lists. |
 | **`repository.py`** | All async DB operations in one module (`create_session`, `get_runnable_tasks`, …). |
+
+### Agents and assignments
+
+Register an agent once (`create_agent`), then attach work to it with **`create_assignment(task_id, session_id, agent_id)`**. Helpers include **`get_agent`**, **`get_agent_by_name`** (avoid duplicate names if you treat `name` as unique), and **`get_agent_with_assignments`** (eager-loads assignment history for resumption-style reads).
+
+In code, `create_agent(..., agent_type=...)` maps to the SQL column **`type`** (Python `type` is reserved for the builtin).
 
 ### Default database location
 
@@ -88,6 +95,8 @@ alembic upgrade head
 ```
 
 Revision scripts live under `chanakya/db/migrations/versions/`.
+
+Initial revision: **`b86554c1b399`** (full schema). Follow-up: **`f3d402b3bd47`** adds the **`agents`** table and refactors **`agent_assignments`** to reference **`agent_id`** (drops duplicated `agent_type` / `provider` / `mode` on assignments). That migration **deletes all rows in `agent_assignments`** before altering SQLite tables (no automatic backfill from old columns).
 
 ### Smoke test (repository + dependency logic)
 

@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from chanakya.arthashastra.models import AdaptorArtifacts, AdaptorMetrics
 from chanakya.db.engine import get_session_factory
 from chanakya.db.models import (
@@ -15,6 +16,7 @@ from chanakya.db.models import (
     AssignmentStatus,
     CheckpointStatus,
     CheckpointType,
+    DbAgent,
     DbAgentAssignment,
     DbArtifact,
     DbCheckpoint,
@@ -264,6 +266,68 @@ async def complete_task(task_id: uuid.UUID, result_summary: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+
+
+async def create_agent(
+    name: str,
+    agent_type: AgentType,
+    system_prompt: str,
+    provider: Provider,
+    mode: AgentMode,  # noqa: A002
+    *,
+    agent_id: uuid.UUID | None = None,
+) -> DbAgent:
+    factory = get_session_factory()
+    async with factory() as db:
+        a = DbAgent(
+            id=agent_id or uuid.uuid4(),
+            name=name,
+            type=agent_type,
+            system_prompt=system_prompt,
+            provider=provider,
+            mode=mode,
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        db.add(a)
+        await db.commit()
+        await db.refresh(a)
+        return a
+
+
+async def get_agent(agent_id: uuid.UUID) -> DbAgent:
+    factory = get_session_factory()
+    async with factory() as db:
+        a = await db.get(DbAgent, agent_id)
+        if a is None:
+            raise KeyError("agent not found")
+        return a
+
+
+async def get_agent_by_name(name: str) -> DbAgent | None:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(select(DbAgent).where(DbAgent.name == name).limit(1))
+        return r.scalar_one_or_none()
+
+
+async def get_agent_with_assignments(agent_id: uuid.UUID) -> DbAgent:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(
+            select(DbAgent)
+            .where(DbAgent.id == agent_id)
+            .options(selectinload(DbAgent.assignments))
+        )
+        a = r.scalar_one_or_none()
+        if a is None:
+            raise KeyError("agent not found")
+        return a
+
+
+# ---------------------------------------------------------------------------
 # Assignments
 # ---------------------------------------------------------------------------
 
@@ -271,18 +335,17 @@ async def complete_task(task_id: uuid.UUID, result_summary: str) -> None:
 async def create_assignment(
     task_id: uuid.UUID,
     session_id: uuid.UUID,
-    agent_type: AgentType,
-    provider: Provider,
-    mode: AgentMode,  # noqa: A002
+    agent_id: uuid.UUID,
 ) -> DbAgentAssignment:
     factory = get_session_factory()
     async with factory() as db:
+        ag = await db.get(DbAgent, agent_id)
+        if ag is None:
+            raise KeyError("agent not found")
         a = DbAgentAssignment(
             task_id=task_id,
             session_id=session_id,
-            agent_type=agent_type,
-            provider=provider,
-            mode=mode,
+            agent_id=agent_id,
             status=AssignmentStatus.assigned,
             created_at=_now(),
         )
