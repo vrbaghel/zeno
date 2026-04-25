@@ -29,12 +29,11 @@ from chanakya.db.models import (
     DbWing,
     PlanStatus,
     Provider,
-    SessionMode,
     SessionStatus,
     TaskStatus,
     TaskType,
 )
-from chanakya.core.enums import OrchestratorState
+from chanakya.core.enums import ExecutionMode, OrchestratorState
 
 # ---------------------------------------------------------------------------
 # Internals
@@ -59,7 +58,7 @@ async def _next_plan_revision(db: AsyncSession, session_id: uuid.UUID) -> int:
 
 
 async def create_session(
-    mode: SessionMode, working_directory: str, raw_input: str, *, id: uuid.UUID | None = None
+    mode: ExecutionMode, working_directory: str, raw_input: str, *, id: uuid.UUID | None = None
 ) -> DbSession:
     factory = get_session_factory()
     async with factory() as db:

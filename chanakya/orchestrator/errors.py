@@ -59,6 +59,27 @@ class UnknownError(ChanakyaError):
         super().__init__(code="UNKNOWN_ERROR", message=message, detail=detail)
 
 
+async def persist_session_failure(
+    error: ChanakyaError,
+    session_id: UUID | None,
+    db_repo: Any,
+) -> None:
+    """Mark session and orchestrator state failed (best-effort). Does not exit."""
+    if error.detail:
+        logger.error("Chanakya error detail: %s", error.detail)
+    logger.error("Chanakya session failure (%s): %s", error.code, error.message)
+
+    if session_id is not None:
+        try:
+            await db_repo.update_session_status(session_id, SessionStatus.failed)
+        except Exception as e:
+            logger.error("Failed to set session status=failed: %s", str(e))
+        try:
+            await db_repo.update_orchestrator_state(session_id, OrchestratorState.FAILED)
+        except Exception as e:
+            logger.error("Failed to set orchestrator_state=FAILED: %s", str(e))
+
+
 async def terminate(
     error: ChanakyaError,
     session_id: UUID | None,
@@ -73,19 +94,7 @@ async def terminate(
     - Exit non-zero
     """
 
-    if error.detail:
-        logger.error("Chanakya error detail: %s", error.detail)
-    logger.error("Chanakya terminating (%s): %s", error.code, error.message)
-
-    if session_id is not None:
-        try:
-            await db_repo.update_session_status(session_id, SessionStatus.failed)
-        except Exception as e:
-            logger.error("Failed to set session status=failed: %s", str(e))
-        try:
-            await db_repo.update_orchestrator_state(session_id, OrchestratorState.FAILED)
-        except Exception as e:
-            logger.error("Failed to set orchestrator_state=FAILED: %s", str(e))
+    await persist_session_failure(error, session_id, db_repo)
 
     console = Console()
     console.print(f"[red]Error:[/red] {error.message}")

@@ -75,6 +75,16 @@ def reset_engine() -> None:
     _default_factory = None
 
 
+async def dispose_db_engine() -> None:
+    """Dispose the global async engine (e.g. CLI /quit)."""
+    global _default_engine, _default_factory
+    eng = _default_engine
+    _default_engine = None
+    _default_factory = None
+    if eng is not None:
+        await eng.dispose()
+
+
 async def get_async_session() -> AsyncIterator[AsyncSession]:
     factory = get_session_factory()
     async with factory() as session:
