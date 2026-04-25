@@ -4,8 +4,10 @@ import logging
 from pathlib import Path
 
 from chanakya.core.enums import ExecutionMode, OrchestratorState
+from chanakya.core.mode import OperationMode
 from chanakya.db.models import DbSession, SessionStatus
 from chanakya.memory import palace
+from chanakya.agents.registry import AdaptorRegistry
 from chanakya.orchestrator.errors import InitializationError, StorageError
 from chanakya.orchestrator.git import ensure_git_initialized
 
@@ -47,14 +49,15 @@ async def prepare_workspace(working_directory: str, *, db_repo) -> tuple[str, st
 async def initialize_session(
     raw_input: str,
     execution_mode: ExecutionMode,
+    operation_mode: OperationMode,
     working_directory: str,
     *,
     db_repo,
-) -> tuple[DbSession, str]:
+) -> tuple[DbSession, list[str]]:
     """
-    Returns (DbSession, wing_name).
+    Returns (DbSession, available_providers).
     """
-    wing_name, wd = await prepare_workspace(working_directory, db_repo=db_repo)
+    _wing_name, wd = await prepare_workspace(working_directory, db_repo=db_repo)
 
     try:
         session = await db_repo.create_session(
@@ -65,13 +68,21 @@ async def initialize_session(
     except Exception as e:
         raise StorageError("Failed to create session in SQLite", detail=str(e)) from e
 
+    # Phase 8B: Providers available for this run.
+    # Today, we only support adaptor-based mode; api mode is not implemented.
+    # Still probe registry so the lead agent can assign providers correctly.
+    if operation_mode != OperationMode.adapter:
+        logger.warning("operation_mode=%s is not implemented; probing adaptor registry anyway", operation_mode)
+    registry = AdaptorRegistry.discover()
+    providers = registry.available()
+
     try:
         await db_repo.update_orchestrator_state(session.id, OrchestratorState.INITIALIZING)
         await db_repo.update_orchestrator_state(session.id, OrchestratorState.AWAITING_LEAD)
     except Exception as e:
         raise StorageError("Failed to update orchestrator state in SQLite", detail=str(e)) from e
 
-    return session, wing_name
+    return session, providers
 
 
 async def teardown_session(

@@ -44,6 +44,11 @@ class ValidationError(ChanakyaError):
         super().__init__(code="VALIDATION_ERROR", message=message, detail=detail)
 
 
+class LeadAgentTerminationError(ChanakyaError):
+    def __init__(self, message: str, *, detail: str | None = None) -> None:
+        super().__init__(code="LEAD_AGENT_TERMINATED", message=message, detail=detail)
+
+
 class MergeError(ChanakyaError):
     def __init__(self, message: str, *, detail: str | None = None) -> None:
         super().__init__(code="MERGE_ERROR", message=message, detail=detail)

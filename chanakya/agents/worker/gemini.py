@@ -137,7 +137,7 @@ class GeminiAdaptor(BaseAgentAdapter):
                 recoverable=True,
             )
 
-        timeout_s = request.timeout_seconds or 60.0
+        timeout_s = request.timeout_seconds or 120.0
 
         try:
             stdout_task = self._collect(process.stdout)

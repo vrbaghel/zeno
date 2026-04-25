@@ -34,7 +34,7 @@ class ChanakyaSettings(BaseSettings):
     )
 
     orchestrator_timeout_seconds: float = Field(
-        default=60.0,
+        default=120.0,
         validation_alias=AliasChoices(
             "ORCHESTRATOR_TIMEOUT_SECONDS",
             "CHANAKYA_ORCHESTRATOR_TIMEOUT_SECONDS",
