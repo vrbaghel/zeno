@@ -5,7 +5,7 @@ from uuid import UUID
 
 from rich.console import Console
 
-from chanakya.arthashastra.models import (
+from chanakya.agents.models import (
     AdaptorError,
     AdaptorMetrics,
     AdaptorResponse,

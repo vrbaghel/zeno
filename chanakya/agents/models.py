@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from chanakya.core.enums import OrchestratorState
+from chanakya.memory.models import MemDiaryEntry
 
 
 def utc_now() -> datetime:
@@ -181,6 +182,48 @@ class ExecutionPlanResponse(BaseModel):
     diary_entry: DiaryEntry
 
 
+# ---------------------------------------------------------------------------
+# Phase 8A: Unified lead agent response schema
+# ---------------------------------------------------------------------------
+
+
+class OptionDefinition(BaseModel):
+    label: str
+    description: str
+
+
+class UserOptions(BaseModel):
+    option_a: OptionDefinition
+    option_b: OptionDefinition
+    option_c: OptionDefinition
+
+
+class LeadAgentResponse(BaseModel):
+    type: Literal["execution", "clarification", "terminate"]
+
+    # clarification
+    question: str | None = None
+    context: str | None = None
+    options: UserOptions | None = None
+
+    # execution
+    task_summary: str | None = None
+    rooms: list[RoomDefinition] | None = None
+    tasks: list[TaskDefinition] | None = None
+    assumptions: list[str] | None = None
+    diary_entry: MemDiaryEntry | None = None
+
+    # terminate
+    reason: str | None = None
+
+
+class ClarificationInput(BaseModel):
+    type: Literal["clarification_response"] = "clarification_response"
+    question: str
+    choice: Literal["a", "b", "c"]
+    label: str
+
+
 class ClarificationAnswer(BaseModel):
     question_id: str
     answer: str
@@ -225,54 +268,61 @@ class CheckpointContent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-def validate_lead_response(
-    lead_response: dict[str, Any] | ClarificationResponse | ExecutionPlanResponse,
-    *,
-    mode: Literal["yolo", "hitl"],
-    is_revision: bool = False,
-    completed_tasks: set[str] | None = None,
-) -> list[str]:
+def validate_lead_response(response: LeadAgentResponse) -> list[str]:
     errors: list[str] = []
-    completed_tasks = completed_tasks or set()
+    rtype = response.type
 
-    if isinstance(lead_response, dict):
-        rtype = lead_response.get("type")
-    else:
-        rtype = lead_response.type
-
-    if rtype not in {"clarification", "execution_plan"}:
-        errors.append('type must be exactly "clarification" or "execution_plan"')
-        return errors
-
-    if mode == "yolo" and rtype == "clarification":
-        errors.append("YOLO mode does not allow clarification responses")
+    if rtype not in {"execution", "clarification", "terminate"}:
+        errors.append('type must be exactly "execution" | "clarification" | "terminate"')
         return errors
 
     if rtype == "clarification":
-        # Nothing else from the 8 rules applies besides discriminator + YOLO reject.
+        if not (response.question and response.question.strip()):
+            errors.append("question must be non-empty for type=clarification")
+
+        if response.options is None:
+            errors.append("options must be present for type=clarification")
+            return errors
+
+        # Ensure the three options exist and labels are non-empty.
+        for key, opt in (
+            ("option_a", response.options.option_a),
+            ("option_b", response.options.option_b),
+            ("option_c", response.options.option_c),
+        ):
+            if opt is None:
+                errors.append(f"{key} must be non-null for type=clarification")
+                continue
+            if not (opt.label and opt.label.strip()):
+                errors.append(f"{key}.label must be a non-empty string for type=clarification")
+
         return errors
 
-    # execution_plan rules
-    try:
-        plan = lead_response if isinstance(lead_response, ExecutionPlanResponse) else ExecutionPlanResponse.model_validate(lead_response)
-    except Exception as e:
-        return [f"execution_plan parse error: {e}"]
-
-    if plan.diary_entry is None:
-        errors.append("diary_entry must be present in ExecutionPlanResponse")
-
-    if not plan.tasks:
-        errors.append("ExecutionPlanResponse.tasks must contain at least one task")
+    if rtype == "terminate":
+        if not (response.reason and response.reason.strip()):
+            errors.append("reason must be non-empty string for type=terminate")
         return errors
 
-    room_names = {r.name for r in plan.rooms}
-    task_ids = {t.id for t in plan.tasks}
+    # execution rules
+    if not response.tasks:
+        errors.append("tasks must be non-empty list for type=execution")
+        return errors
+    if not response.rooms:
+        errors.append("rooms must be non-empty list for type=execution")
+        return errors
+    if response.diary_entry is None:
+        errors.append("diary_entry must be present for type=execution")
 
-    for t in plan.tasks:
+    room_names = {r.name for r in response.rooms}
+    task_ids = {t.id for t in response.tasks}
+
+    for t in response.tasks:
         if t.parallel_group is not None:
             pg = t.parallel_group
             if not (len(pg) == 1 and "A" <= pg <= "Z"):
-                errors.append(f"task {t.id}: parallel_group must be null or a single uppercase letter A-Z")
+                errors.append(
+                    f"task {t.id}: parallel_group must be null or a single uppercase letter A-Z"
+                )
 
         for dep in t.depends_on:
             if dep not in task_ids:
@@ -280,13 +330,6 @@ def validate_lead_response(
 
         if t.room not in room_names:
             errors.append(f"task {t.id}: room {t.room!r} not found in rooms list")
-
-        if is_revision and completed_tasks:
-            for dep in t.depends_on:
-                if dep in completed_tasks:
-                    errors.append(
-                        f"revision invalid: task {t.id} depends_on includes completed task id {dep!r}"
-                    )
 
     return errors
 

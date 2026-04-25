@@ -8,8 +8,8 @@ from time import perf_counter
 
 from rich.console import Console
 
-from chanakya.arthashastra.models import CheckpointContent
-from chanakya.arthashastra.registry import AdaptorRegistry
+from chanakya.agents.models import CheckpointContent
+from chanakya.agents.registry import AdaptorRegistry
 from chanakya.cli import display as cli_display
 from chanakya.core.config import load_config
 from chanakya.core.enums import ExecutionMode, OrchestratorState
