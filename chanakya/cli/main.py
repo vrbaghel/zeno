@@ -9,13 +9,13 @@ import typer
 from rich.console import Console
 
 from chanakya import __version__
-from chanakya.arthashastra.models import (
+from chanakya.agents.models import (
     AdaptorMessage,
     AdaptorRequest,
     AdaptorRequestPayload,
     CheckpointContent,
 )
-from chanakya.arthashastra.registry import AdaptorRegistry
+from chanakya.agents.registry import AdaptorRegistry
 from chanakya.cli import display as cli_display
 from chanakya.cli.input import SlashCommand, TaskInput, async_input, parse_input
 from chanakya.core.config import load_config

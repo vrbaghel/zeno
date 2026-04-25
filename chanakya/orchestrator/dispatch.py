@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from uuid import UUID, uuid4
 
-from chanakya.arthashastra.models import (
+from chanakya.agents.models import (
     AdaptorError,
     AdaptorMessage,
     AdaptorMetrics,
@@ -12,7 +12,7 @@ from chanakya.arthashastra.models import (
     AdaptorResponse,
     AdaptorResponseStatus,
 )
-from chanakya.arthashastra.registry import AdaptorRegistry
+from chanakya.agents.registry import AdaptorRegistry
 from chanakya.core.mode import OperationMode
 from chanakya.db.models import DbAgent, DbAgentAssignment, DbSession, DbTask
 from chanakya.memory.models import MemContext, MemDiaryEntry, MemDrawer, MemWing

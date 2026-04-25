@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from chanakya.arthashastra.models import AdaptorArtifacts, AdaptorMetrics
+from chanakya.agents.models import AdaptorArtifacts, AdaptorMetrics
 from chanakya.db.engine import get_session_factory
 from chanakya.db.models import (
     AgentMode,

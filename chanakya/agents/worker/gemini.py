@@ -1,35 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from datetime import datetime
-from shutil import which
 from typing import Any
 
-from chanakya.arthashastra.base import BaseAdaptor
-from chanakya.arthashastra.models import (
-    AdaptorArtifactMetrics,
+from chanakya.agents.base import BaseAgentAdapter, _assemble_metrics, utc_now
+from chanakya.agents.models import (
     AdaptorError,
     AdaptorErrorCode,
     AdaptorMessage,
-    AgentResponse,
     AdaptorMetrics,
     AdaptorRequest,
     AdaptorResponse,
     AdaptorResponsePayload,
     AdaptorResponseStatus,
-    AdaptorTimingMetrics,
-    AdaptorTokenMetrics,
+    AgentResponse,
 )
-from chanakya.arthashastra.utils.process import collect_stream, spawn, terminate, utc_now
-from chanakya.arthashastra.utils.tokenizer import count as count_tokens
-
-
-def _ms_between(a: datetime | None, b: datetime | None) -> int | None:
-    if a is None or b is None:
-        return None
-    return int((b - a).total_seconds() * 1000)
 
 
 def _serialize_request_to_prompt(request: AdaptorRequest) -> str:
@@ -70,30 +57,10 @@ any text outside of this JSON block:
     return "\n\n".join(parts).strip() + "\n"
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
-    # Gemini CLI can print pre/post text. Try progressively from the last '{'.
-    starts = [i for i, ch in enumerate(text) if ch == "{"]
-    if not starts:
-        raise ValueError("no JSON object found in output")
-
-    last_err: Exception | None = None
-    end = text.rfind("}")
-    if end == -1:
-        raise ValueError("no JSON object found in output")
-
-    for start in reversed(starts):
-        if start >= end:
-            continue
-        candidate = text[start : end + 1]
-        try:
-            obj = json.loads(candidate)
-            if isinstance(obj, dict):
-                return obj
-        except Exception as e:
-            last_err = e
-            continue
-
-    raise ValueError(f"no valid JSON object found in output ({last_err})")
+def _ms_between(a: datetime | None, b: datetime | None) -> int | None:
+    if a is None or b is None:
+        return None
+    return int((b - a).total_seconds() * 1000)
 
 
 @dataclass(frozen=True)
@@ -102,7 +69,7 @@ class GeminiAdaptorConfig:
     sp_model_path: str | None = None  # sentencepiece model path for exact counts
 
 
-class GeminiAdaptor(BaseAdaptor):
+class GeminiAdaptor(BaseAgentAdapter):
     name = "gemini"
     provider = "gemini"
     mode = "adapter"
@@ -112,10 +79,7 @@ class GeminiAdaptor(BaseAdaptor):
         self._config = config or GeminiAdaptorConfig()
 
     def probe(self) -> bool:
-        try:
-            return which("gemini") is not None
-        except Exception:
-            return False
+        return self._which("gemini")
 
     def adaptor_info(self) -> dict:
         return {
@@ -141,10 +105,9 @@ class GeminiAdaptor(BaseAdaptor):
             )
 
         prompt = _serialize_request_to_prompt(request)
-        input_tok = count_tokens(prompt)
 
         try:
-            process = await spawn("gemini", ["--yolo"])
+            process = await self._spawn("gemini")
         except Exception as e:
             return AdaptorError(
                 request_id=request.id,
@@ -165,7 +128,7 @@ class GeminiAdaptor(BaseAdaptor):
             await process.stdin.drain()
             process.stdin.close()
         except Exception as e:
-            await terminate(process)
+            await self._terminate(process)
             return AdaptorError(
                 request_id=request.id,
                 agent_id=agent_id,
@@ -177,15 +140,15 @@ class GeminiAdaptor(BaseAdaptor):
         timeout_s = request.timeout_seconds or 60.0
 
         try:
-            stdout_task = collect_stream(process.stdout)
-            stderr_task = collect_stream(process.stderr)
+            stdout_task = self._collect(process.stdout)
+            stderr_task = self._collect(process.stderr)
             stdout_res, stderr_res = await asyncio.wait_for(
                 asyncio.gather(stdout_task, stderr_task),
                 timeout=timeout_s,
             )
             await asyncio.wait_for(process.wait(), timeout=1.0)
         except TimeoutError:
-            await terminate(process)
+            await self._terminate(process)
             return AdaptorError(
                 request_id=request.id,
                 agent_id=agent_id,
@@ -194,7 +157,7 @@ class GeminiAdaptor(BaseAdaptor):
                 recoverable=True,
             )
         except Exception as e:
-            await terminate(process)
+            await self._terminate(process)
             return AdaptorError(
                 request_id=request.id,
                 agent_id=agent_id,
@@ -210,7 +173,7 @@ class GeminiAdaptor(BaseAdaptor):
         raw_err = stderr_res.text.strip()
 
         try:
-            data = _extract_json_object(raw_out)
+            data = self._json_loads(_extract_json_object_strict(raw_out))
             agent_resp = AgentResponse.model_validate(data)
         except Exception as e:
             detail = raw_err or raw_out
@@ -241,42 +204,50 @@ class GeminiAdaptor(BaseAdaptor):
             artifacts=agent_resp.artifacts,
         )
 
-        out_tok = count_tokens(raw_out)
-
-        tokens = AdaptorTokenMetrics(
-            input=input_tok,
-            output=out_tok,
-            total=input_tok + out_tok,
-            deviation=self.deviation,
-        )
-
-        artifact_metrics = AdaptorArtifactMetrics(
-            created_count=len(resp.artifacts.created),
-            updated_count=len(resp.artifacts.updated),
-            deleted_count=len(resp.artifacts.deleted),
-        )
-
-        timing = AdaptorTimingMetrics(
+        metrics = _assemble_metrics(
+            agent_id=agent_id,
+            provider=self.provider,
+            mode=self.mode,
+            model=self._config.model,
             queued_at=queued_at,
             dispatched_at=dispatched_at,
             first_token_at=first_token_at,
             completed_at=completed_at,
-            latency_ms=_ms_between(queued_at, completed_at),
-            time_to_first_token_ms=_ms_between(dispatched_at, first_token_at),
-        )
-
-        metrics = AdaptorMetrics(
-            timing=timing,
-            tokens=tokens,
-            artifacts=artifact_metrics,
-            agent_id=agent_id,
-            mode=self.mode,
-            provider=self.provider,
-            model=self._config.model,
+            prompt_text=prompt,
+            output_text=raw_out,
+            artifact_created_count=len(resp.artifacts.created),
+            artifact_updated_count=len(resp.artifacts.updated),
+            artifact_deleted_count=len(resp.artifacts.deleted),
+            deviation=self.deviation,
         )
 
         if resp.status == AdaptorResponseStatus.truncated:
-            # It's still a response+metrics success, but mark that truncation happened.
             pass
 
         return resp, metrics
+
+
+def _extract_json_object_strict(text: str) -> str:
+    # Gemini CLI can print pre/post text. Try progressively from the last '{'.
+    starts = [i for i, ch in enumerate(text) if ch == "{"]
+    if not starts:
+        raise ValueError("no JSON object found in output")
+
+    last_err: Exception | None = None
+    end = text.rfind("}")
+    if end == -1:
+        raise ValueError("no JSON object found in output")
+
+    for start in reversed(starts):
+        if start >= end:
+            continue
+        candidate = text[start : end + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise ValueError(f"no valid JSON object found in output ({last_err})")
+

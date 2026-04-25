@@ -21,3 +21,8 @@ class OrchestratorState(str, Enum):
     FAILED = "FAILED"
     ABORTED = "ABORTED"
 
+
+class LeadAgentStage(str, Enum):
+    INITIAL = "initial"
+    REVISION = "revision"
+
