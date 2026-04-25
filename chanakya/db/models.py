@@ -20,7 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from chanakya.core.enums import OrchestratorState
+from chanakya.core.enums import ExecutionMode, OrchestratorState
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -42,11 +42,6 @@ class SessionStatus(str, enum.Enum):
     completed = "completed"
     failed = "failed"
     aborted = "aborted"
-
-
-class SessionMode(str, enum.Enum):
-    yolo = "yolo"
-    hitl = "hitl"
 
 
 class PlanStatus(str, enum.Enum):
@@ -137,8 +132,8 @@ class DbSession(Base):
         nullable=False,
         default=SessionStatus.active,
     )
-    mode: Mapped[SessionMode] = mapped_column(
-        Enum(SessionMode, values_callable=_values, native_enum=False, length=16),
+    mode: Mapped[ExecutionMode] = mapped_column(
+        Enum(ExecutionMode, values_callable=_values, native_enum=False, length=16),
         nullable=False,
     )
     orchestrator_state: Mapped[OrchestratorState] = mapped_column(

@@ -12,7 +12,8 @@ import tempfile
 import uuid
 
 from chanakya.db import engine as engine_mod
-from chanakya.db.models import SessionMode, TaskType
+from chanakya.core.enums import ExecutionMode
+from chanakya.db.models import TaskType
 from chanakya.db.repository import (
     add_task_dependency,
     create_execution_plan,
@@ -36,7 +37,7 @@ async def main() -> None:
 
     sid = uuid.uuid4()
     s = await create_session(
-        SessionMode.yolo,
+        ExecutionMode.YOLO,
         working_directory="/tmp",
         raw_input="smoke test",
         id=sid,

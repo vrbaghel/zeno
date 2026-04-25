@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional
 from uuid import UUID
 
@@ -8,10 +9,17 @@ import typer
 from rich.console import Console
 
 from chanakya import __version__
-from chanakya.arthashastra.models import AdaptorMessage, AdaptorRequest, AdaptorRequestPayload
+from chanakya.arthashastra.models import (
+    AdaptorMessage,
+    AdaptorRequest,
+    AdaptorRequestPayload,
+    CheckpointContent,
+)
 from chanakya.arthashastra.registry import AdaptorRegistry
-from chanakya.cli.display import print_adaptor_result
+from chanakya.cli import display as cli_display
+from chanakya.cli.input import SlashCommand, TaskInput, async_input, parse_input
 from chanakya.core.config import load_config
+from chanakya.core.enums import ExecutionMode, OrchestratorState
 from chanakya.core.mode import (
     OperationMode,
     api_key_statuses,
@@ -19,13 +27,14 @@ from chanakya.core.mode import (
     resolve_mode,
     scan_adapters,
 )
+from chanakya.orchestrator.core import OrchestratorCore
+from chanakya.orchestrator.errors import ChanakyaError
 from chanakya.utils.display import (
     StartupContext,
     print_adapter_startup,
     print_api_ready,
     print_api_missing_keys_error,
 )
-
 
 app = typer.Typer(add_completion=False, no_args_is_help=False)
 
@@ -41,10 +50,12 @@ def _parse_mode(value: Optional[str]) -> Optional[OperationMode]:
 
 @app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
+    yolo: bool = typer.Option(False, "--yolo", help="YOLO execution mode (default is HITL)."),
     mode: Optional[str] = typer.Option(
         None,
         "--mode",
-        help="Operational mode: adapter or api",
+        help="Operation mode: adapter or api",
     ),
     version: bool = typer.Option(
         False,
@@ -57,14 +68,16 @@ def main(
         typer.echo(f"Chanakya v{__version__}")
         raise typer.Exit()
 
-    console = Console()
+    if ctx.invoked_subcommand is not None:
+        return
 
+    console = Console()
     loaded = load_config()
     cli_mode = _parse_mode(mode)
     config_mode = OperationMode.parse(loaded.settings.mode)
     active_mode, source = resolve_mode(cli_mode=cli_mode, config_mode=config_mode)
 
-    ctx = StartupContext(
+    ctx_obj = StartupContext(
         version=__version__,
         config_found=loaded.found,
         config_path=loaded.path,
@@ -74,17 +87,91 @@ def main(
 
     if active_mode == OperationMode.adapter:
         adapters = scan_adapters()
-        print_adapter_startup(console=console, ctx=ctx, adapters=adapters)
-        return
+        print_adapter_startup(console=console, ctx=ctx_obj, adapters=adapters)
+    else:
+        keys = api_key_statuses(loaded.settings)
+        if not api_mode_has_any_key(loaded.settings):
+            print_api_missing_keys_error(console=console, ctx=ctx_obj, keys=keys)
+            raise typer.Exit(code=1)
+        print_api_ready(console=console, ctx=ctx_obj)
 
-    keys = api_key_statuses(loaded.settings)
-    if not api_mode_has_any_key(loaded.settings):
-        print_api_missing_keys_error(console=console, ctx=ctx, keys=keys)
-        raise typer.Exit(code=1)
+    execution_mode = ExecutionMode.YOLO if yolo else ExecutionMode.HITL
 
-    # Phase 1: if API mode is usable, just report readiness and exit.
-    # (No agents, no prompts yet.)
-    print_api_ready(console=console, ctx=ctx)
+    asyncio.run(
+        _interactive_main(
+            console=console,
+            operation_mode=active_mode,
+            execution_mode=execution_mode,
+        )
+    )
+
+
+async def _interactive_main(
+    *,
+    console: Console,
+    operation_mode: OperationMode,
+    execution_mode: ExecutionMode,
+) -> None:
+    cwd = os.getcwd()
+
+    async def hitl_callback(content: CheckpointContent) -> str:
+        return await cli_display.print_checkpoint(console, content)
+
+    orchestrator = OrchestratorCore(
+        execution_mode=execution_mode,
+        operation_mode=operation_mode,
+        working_directory=cwd,
+        hitl_callback=hitl_callback if execution_mode == ExecutionMode.HITL else None,
+    )
+
+    try:
+        await orchestrator.initialize_runtime()
+    except ChanakyaError as e:
+        cli_display.print_error(console, e)
+        raise typer.Exit(code=1) from e
+
+    registry = AdaptorRegistry.discover()
+    adapter_label = "gemini" if "gemini" in registry.available() else "(none)"
+
+    cli_display.print_welcome(
+        console,
+        version=__version__,
+        execution_mode=execution_mode,
+        operation_mode=operation_mode,
+        adapter_label=adapter_label,
+        wing_name=orchestrator.wing_name,
+    )
+
+    while True:
+        raw = await async_input("> ")
+        parsed = parse_input(raw)
+
+        if isinstance(parsed, SlashCommand):
+            if parsed.command == "quit":
+                await orchestrator.teardown()
+                console.print("Goodbye.")
+                return
+            if parsed.command == "status":
+                sid: UUID | None = None
+                st: OrchestratorState | None = None
+                if orchestrator.current_session is not None:
+                    sid = orchestrator.current_session.id
+                    st = await orchestrator.db_repo.get_orchestrator_state(sid)
+                cli_display.print_status(
+                    console,
+                    session_id=sid,
+                    orchestrator_state=st,
+                    working_directory=orchestrator.working_directory,
+                    execution_mode=execution_mode,
+                )
+            elif parsed.command == "help":
+                cli_display.print_help(console)
+            continue
+
+        if isinstance(parsed, TaskInput):
+            if not parsed.text.strip():
+                continue
+            await orchestrator.run(parsed.text)
 
 
 @app.command("test-adaptor")
@@ -126,21 +213,18 @@ def test_adaptor(
     adaptor = registry.get("gemini")
     result = asyncio.run(adaptor.dispatch(request))
 
-    # dispatch returns either (response, metrics) or AdaptorError
     if isinstance(result, tuple):
         response, metrics = result
-        print_adaptor_result(console, response=response, metrics=metrics)
+        cli_display.print_adaptor_result(console, response=response, metrics=metrics)
         return
 
-    print_adaptor_result(console, error=result)
+    cli_display.print_adaptor_result(console, error=result)
     raise typer.Exit(code=1)
 
 
 def run() -> None:
-    # Convenience entrypoint for tools/tests.
     app()
 
 
 if __name__ == "__main__":
     run()
-

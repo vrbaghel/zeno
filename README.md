@@ -53,7 +53,7 @@ Phase 3 adds a **SQLite** persistence layer under `chanakya/db/`, exposed throug
 |------|---------|
 | **`chanakya/db/`** | Database package: engine, ORM models, repository, migrations. |
 | **`Db*` models** | SQLAlchemy ORM classes (`DbSession`, `DbTask`, …) — the `Db` prefix marks **persistence-layer** types so they are not confused with domain/orchestrator types later. |
-| **`sessions`** | Top-level run: user task submission, cwd, raw prompt, mode (`yolo` \| `hitl`), lifecycle status. |
+| **`sessions`** | Top-level run: user task submission, cwd, raw prompt, `ExecutionMode` (`yolo` \| `hitl`), lifecycle status. |
 | **`execution_plans`** | One decomposition graph per plan revision; linked to a session. Revisions increment when a plan is revised. |
 | **`tasks`** | Atomic work units (title, description, type, status, priority, optional parallel group, HITL checkpoint flag, result summary). |
 | **`task_dependencies`** | Directed edges: `task_id` depends on `depends_on_task_id`. |
@@ -211,4 +211,15 @@ Run from the repository root, using the repo-local venv:
 Optional settings:
 
 - `ORCHESTRATOR_TIMEOUT_SECONDS`: overrides adaptor dispatch timeout for the orchestrator (default: 60).
+
+## Phase 7 (CLI and orchestrator)
+
+The `chanakya` command starts an **interactive** session: one long-lived `OrchestratorCore`, a new SQLite `DbSession` per task line you enter, slash commands (`/quit`, `/status`, `/help`), and Rich line-based progress. Default execution mode is HITL; pass `--yolo` for YOLO.
+
+```bash
+chanakya
+chanakya --yolo
+```
+
+The Phase 2 adaptor smoke hook remains: `chanakya test-adaptor`.
 
