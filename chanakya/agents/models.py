@@ -41,7 +41,7 @@ class AdaptorRequest(BaseModel):
     agent_id: str
     created_at: datetime = Field(default_factory=utc_now)
     payload: AdaptorRequestPayload = Field(default_factory=AdaptorRequestPayload)
-    timeout_seconds: float | None = 60.0
+    timeout_seconds: float | None = 120.0
 
 
 class AdaptorResponseStatus(str, Enum):

@@ -10,7 +10,13 @@ from rich.console import Console
 
 from chanakya.agents.lead.adapter import LeadAgentAdapter, LeadAgentContext
 from chanakya.agents.lead.composer import compose_prompt
-from chanakya.agents.models import CheckpointContent, CheckpointOption, ClarificationInput, LeadAgentResponse
+from chanakya.agents.models import (
+    AgentContext,
+    CheckpointContent,
+    CheckpointOption,
+    ClarificationInput,
+    LeadAgentResponse,
+)
 from chanakya.agents.registry import AdaptorRegistry
 from chanakya.cli import display as cli_display
 from chanakya.core.config import load_config
@@ -170,7 +176,6 @@ class OrchestratorCore:
             cli_display.print_state_transition(self._rich_console, st)
 
             # Lead agent planning
-            await self._transition(OrchestratorState.AWAITING_LEAD)
             lead_plan = await self._dispatch_lead_agent(
                 stage=LeadAgentStage.INITIAL,
                 raw_input=raw_input,
@@ -257,7 +262,7 @@ class OrchestratorCore:
             await self.db_repo.assign_worktree(task.id, worktree_path=worktree_path, branch_name=branch_name)
 
             loaded = load_config()
-            timeout_s = float(getattr(loaded.settings, "orchestrator_timeout_seconds", 60.0))
+            timeout_s = float(getattr(loaded.settings, "orchestrator_timeout_seconds", 120.0))
             response, metrics_out, drawer = await dispatch_agent(
                 task=task,
                 agent=agent,
@@ -379,11 +384,7 @@ class OrchestratorCore:
         except Exception:
             mem_ctx = None
 
-        agent_context = (
-            mem_ctx
-            if mem_ctx is not None
-            else type("Tmp", (), {"session_summary": "", "relevant_prior_work": [], "agent_history": []})()
-        )
+        agent_context = _to_agent_context(mem_ctx)
 
         ctx = LeadAgentContext(
             session_id=str(self.current_session.id),
@@ -392,7 +393,7 @@ class OrchestratorCore:
             stage=stage,
             working_directory=wd,
             existing_rooms=existing_rooms,
-            agent_context=agent_context,  # type: ignore[arg-type]
+            agent_context=agent_context,
             available_providers=self.available_providers,
             current_plan=current_plan,  # type: ignore[arg-type]
             completed_tasks=completed_tasks,
@@ -400,7 +401,9 @@ class OrchestratorCore:
         )
 
         prompt = compose_prompt(mode=self.execution_mode, stage=stage, context=ctx)
-        lead = LeadAgentAdapter(timeout_seconds=60.0)
+        loaded = load_config()
+        timeout_s = float(getattr(loaded.settings, "orchestrator_timeout_seconds", 120.0))
+        lead = LeadAgentAdapter(timeout_seconds=timeout_s)
         await lead.start(prompt)
 
         while True:
@@ -447,6 +450,7 @@ class OrchestratorCore:
                 await lead.terminate()
                 return resp
 
+
     async def _complete_session(self) -> None:
         assert self.current_session is not None
         await self._transition(OrchestratorState.COMPLETED)
@@ -483,3 +487,32 @@ class OrchestratorCore:
             self.current_session = None
 
         await dispose_db_engine()
+
+
+def _to_agent_context(mem_ctx) -> AgentContext:
+    if mem_ctx is None:
+        return AgentContext(session_summary="", relevant_prior_work=[], agent_history=[])
+
+    relevant: list[str] = []
+    try:
+        for d in getattr(mem_ctx, "relevant_drawers", []) or []:
+            txt = d.to_document().strip()
+            if txt:
+                relevant.append(txt)
+    except Exception:
+        relevant = []
+
+    history: list[str] = []
+    try:
+        for d in getattr(mem_ctx, "agent_history", []) or []:
+            txt = d.to_document().strip()
+            if txt:
+                history.append(txt)
+    except Exception:
+        history = []
+
+    return AgentContext(
+        session_summary=str(getattr(mem_ctx, "session_summary", "") or ""),
+        relevant_prior_work=relevant,
+        agent_history=history,
+    )

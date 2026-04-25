@@ -42,7 +42,7 @@ class _Timestamps:
 
 
 class LeadAgentAdapter:
-    def __init__(self, *, timeout_seconds: float = 60.0) -> None:
+    def __init__(self, *, timeout_seconds: float = 120.0) -> None:
         self.timeout_seconds = timeout_seconds
         self._process: asyncio.subprocess.Process | None = None
         self._ts = _Timestamps()
@@ -65,6 +65,8 @@ class LeadAgentAdapter:
         try:
             self._process.stdin.write(prompt.encode())
             await self._process.stdin.drain()
+            # Gemini CLI often waits for EOF; close stdin after prompt.
+            self._process.stdin.close()
         except Exception as e:
             await _terminate_process(self._process)
             raise DispatchError(f"Failed to write prompt to gemini stdin: {e}") from e
