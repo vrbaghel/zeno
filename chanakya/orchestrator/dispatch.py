@@ -136,7 +136,7 @@ async def dispatch_agent(
         raise StorageError("Failed to mark assignment running", detail=str(e)) from e
 
     registry = AdaptorRegistry.discover()
-    adaptor = registry.default()
+    adaptor = registry.get(str(agent.provider))
     result = await adaptor.dispatch(request)
 
     if isinstance(result, AdaptorError):

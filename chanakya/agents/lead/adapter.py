@@ -28,6 +28,7 @@ class LeadAgentContext(BaseModel):
     working_directory: str
     existing_rooms: list[str] = Field(default_factory=list)
     agent_context: AgentContext
+    available_providers: list[str] = Field(default_factory=list)
 
     current_plan: ExecutionPlanResponse | None = None
     completed_tasks: list[str] | None = None

@@ -8,11 +8,13 @@ from time import perf_counter
 
 from rich.console import Console
 
-from chanakya.agents.models import CheckpointContent
+from chanakya.agents.lead.adapter import LeadAgentAdapter, LeadAgentContext
+from chanakya.agents.lead.composer import compose_prompt
+from chanakya.agents.models import CheckpointContent, CheckpointOption, ClarificationInput, LeadAgentResponse
 from chanakya.agents.registry import AdaptorRegistry
 from chanakya.cli import display as cli_display
 from chanakya.core.config import load_config
-from chanakya.core.enums import ExecutionMode, OrchestratorState
+from chanakya.core.enums import ExecutionMode, LeadAgentStage, OrchestratorState
 from chanakya.core.mode import OperationMode
 from chanakya.db import repository as db_repository
 from chanakya.db.engine import dispose_db_engine
@@ -26,16 +28,20 @@ from chanakya.db.models import (
     TaskType,
 )
 from chanakya.memory.palace import initialize_wing as initialize_mem_wing
+from chanakya.memory.retrieval import build_context
 from chanakya.memory.store import save_drawer
 from chanakya.orchestrator import git as git_ops
 from chanakya.orchestrator.dispatch import dispatch_agent
 from chanakya.orchestrator.errors import (
     ChanakyaError,
     InitializationError,
+    LeadAgentTerminationError,
+    StorageError,
     UnknownError,
     persist_session_failure,
 )
 from chanakya.orchestrator.session import initialize_session, prepare_workspace, teardown_session
+from chanakya.orchestrator.planner import ExecutionPlanner
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +83,7 @@ class OrchestratorCore:
         self.operation_mode = operation_mode
         self.working_directory = str(Path(working_directory).resolve())
         self.hitl_callback = hitl_callback
+        self.available_providers: list[str] = []
 
         self.current_session: DbSession | None = None
         self._wing: MemWing | None = None
@@ -149,59 +156,99 @@ class OrchestratorCore:
         metrics = None
         success = False
         try:
-            session, _wing_name = await initialize_session(
+            session, providers = await initialize_session(
                 raw_input=raw_input,
                 execution_mode=self.execution_mode,
+                operation_mode=self.operation_mode,
                 working_directory=self.working_directory,
                 db_repo=self.db_repo,
             )
             self.current_session = session
+            self.available_providers = providers
 
             st = await self.db_repo.get_orchestrator_state(session.id)
             cli_display.print_state_transition(self._rich_console, st)
 
-            cli_display.print_progress_note(self._rich_console, "Lead agent complete", ok=True)
+            # Lead agent planning
+            await self._transition(OrchestratorState.AWAITING_LEAD)
+            lead_plan = await self._dispatch_lead_agent(
+                stage=LeadAgentStage.INITIAL,
+                raw_input=raw_input,
+                current_plan=None,
+                completed_tasks=None,
+                revision_reason=None,
+            )
+
+            await self._transition(OrchestratorState.PLANNING)
+
+            planner = ExecutionPlanner(
+                db_repo=self.db_repo,
+                working_directory=self.working_directory,
+                wing_name=self.wing_name,
+            )
+            plan = await planner.build_plan(
+                lead_plan,
+                session=session,
+                available_providers=self.available_providers,
+            )
+
+            # HITL plan approval loop
+            if self.execution_mode == ExecutionMode.HITL and self.hitl_callback is not None:
+                while True:
+                    action = await self._create_checkpoint(
+                        CheckpointContent(
+                            type="plan_approval",
+                            title="Approve execution plan?",
+                            description="Approve to begin execution, revise to modify the plan, or cancel to abort.",
+                            options=[],
+                        )
+                    )
+                    if action == "approve":
+                        break
+                    if action == "cancel":
+                        await teardown_session(
+                            session.id,
+                            status=SessionStatus.aborted,
+                            orchestrator_state=OrchestratorState.ABORTED,
+                            db_repo=self.db_repo,
+                        )
+                        return False
+                    if action == "revise":
+                        lead_plan = await self._dispatch_lead_agent(
+                            stage=LeadAgentStage.REVISION,
+                            raw_input=raw_input,
+                            current_plan=lead_plan,
+                            completed_tasks=[],
+                            revision_reason="User requested revision.",
+                        )
+                        plan = await planner.build_plan(
+                            lead_plan,
+                            session=session,
+                            available_providers=self.available_providers,
+                        )
+                        continue
+                    # Unknown choice: loop.
 
             await self._transition(OrchestratorState.EXECUTING)
 
-            plan = await self.db_repo.create_execution_plan(session.id)
-            task = await self.db_repo.create_task(
-                plan_id=plan.id,
-                session_id=session.id,
-                title="Bare orchestrator task",
-                description=raw_input,
-                task_type=TaskType.implementation,
-                priority=1,
-            )
+            runnable = await self.db_repo.get_runnable_tasks(plan.id)
+            if not runnable:
+                raise UnknownError("No runnable tasks produced by plan", detail=plan.id.hex)
+            task = runnable[0]
+
+            assignment = await self.db_repo.get_assignment_for_task(task.id)
+            if assignment is None:
+                raise StorageError("No assignment found for planned task", detail=str(task.id))
+
+            agent = await self.db_repo.get_agent(assignment.agent_id)
 
             await self._hitl_checkpoint_for_tasks([task])
 
             cli_display.print_task_activity(
                 self._rich_console,
                 task_title=task.title,
-                agent_type="coding",
+                agent_type=str(agent.type),
                 status="running",
-            )
-
-            agent_name = "phase6-test-agent"
-            agent = await self.db_repo.get_agent_by_name(agent_name)
-            if agent is None:
-                agent = await self.db_repo.create_agent(
-                    name=agent_name,
-                    agent_type=AgentType.coding,
-                    system_prompt=(
-                        "You are Chanakya's test coding agent. "
-                        "You must do the user's request by modifying the repository. "
-                        "Return a JSON object that conforms to AgentResponse."
-                    ),
-                    provider=Provider.gemini,
-                    mode=AgentMode(self.operation_mode.value),
-                )
-
-            assignment = await self.db_repo.create_assignment(
-                task_id=task.id,
-                session_id=session.id,
-                agent_id=agent.id,
             )
 
             worktree_path, branch_name = await git_ops.create_worktree(
@@ -242,7 +289,7 @@ class OrchestratorCore:
             cli_display.print_task_activity(
                 self._rich_console,
                 task_title=task.title,
-                agent_type="coding",
+                agent_type=str(agent.type),
                 status="completed",
             )
 
@@ -287,6 +334,118 @@ class OrchestratorCore:
         finally:
             self.current_session = None
         return success
+
+    async def _dispatch_lead_agent(
+        self,
+        *,
+        stage: LeadAgentStage,
+        raw_input: str,
+        current_plan: LeadAgentResponse | None,
+        completed_tasks: list[str] | None,
+        revision_reason: str | None,
+    ) -> LeadAgentResponse:
+        if self._wing is None:
+            raise InitializationError("Orchestrator runtime not initialized")
+        if self.current_session is None:
+            raise InitializationError("Session not initialized")
+
+        wd = self.working_directory
+        wing_row = await self.db_repo.get_wing_by_path(wd)
+        wing_id = wing_row.id if wing_row is not None else None
+
+        existing_rooms: list[str] = []
+        if wing_id is not None:
+            try:
+                rooms = await self.db_repo.get_rooms(wing_id)
+                existing_rooms = [r.name for r in rooms]
+            except Exception:
+                existing_rooms = []
+
+        # Build memory context for lead agent.
+        try:
+            current_tasks = []
+            active_plan = await self.db_repo.get_active_plan(self.current_session.id)
+            if active_plan is not None:
+                current_tasks = await self.db_repo.get_tasks_by_plan(active_plan.id)
+            mem_ctx = build_context(
+                working_directory=wd,
+                wing=self._wing,
+                task_description=raw_input,
+                agent_type="lead",
+                agent_id="lead",
+                session_id=self.current_session.id,
+                current_session_tasks=current_tasks,
+            )
+        except Exception:
+            mem_ctx = None
+
+        agent_context = (
+            mem_ctx
+            if mem_ctx is not None
+            else type("Tmp", (), {"session_summary": "", "relevant_prior_work": [], "agent_history": []})()
+        )
+
+        ctx = LeadAgentContext(
+            session_id=str(self.current_session.id),
+            raw_input=raw_input,
+            mode=self.execution_mode,
+            stage=stage,
+            working_directory=wd,
+            existing_rooms=existing_rooms,
+            agent_context=agent_context,  # type: ignore[arg-type]
+            available_providers=self.available_providers,
+            current_plan=current_plan,  # type: ignore[arg-type]
+            completed_tasks=completed_tasks,
+            revision_reason=revision_reason,
+        )
+
+        prompt = compose_prompt(mode=self.execution_mode, stage=stage, context=ctx)
+        lead = LeadAgentAdapter(timeout_seconds=60.0)
+        await lead.start(prompt)
+
+        while True:
+            resp = await lead.read_response()
+            if resp.type == "clarification":
+                if self.execution_mode == ExecutionMode.YOLO:
+                    await lead.terminate()
+                    raise ValidationError("Lead agent produced clarification in YOLO mode")
+                if self.hitl_callback is None:
+                    await lead.terminate()
+                    raise ValidationError("Clarification requested but no HITL callback is configured")
+
+                assert resp.options is not None
+                content = CheckpointContent(
+                    type="unexpected",
+                    title=resp.question or "Clarification needed",
+                    description=(resp.context or "").strip() or "Choose one option.",
+                    options=[
+                        CheckpointOption(key="a", label=resp.options.option_a.label),
+                        CheckpointOption(key="b", label=resp.options.option_b.label),
+                        CheckpointOption(key="c", label=resp.options.option_c.label),
+                    ],
+                    payload={},
+                )
+                choice = await self._create_checkpoint(content)
+                label = {
+                    "a": resp.options.option_a.label,
+                    "b": resp.options.option_b.label,
+                    "c": resp.options.option_c.label,
+                }.get(choice, resp.options.option_a.label)
+                ans = ClarificationInput(
+                    question=resp.question or "",
+                    choice=choice if choice in {"a", "b", "c"} else "a",
+                    label=label,
+                )
+                await lead.send_answers(ans)
+                continue
+
+            if resp.type == "terminate":
+                await lead.terminate()
+                raise LeadAgentTerminationError(resp.reason or "Lead agent terminated")
+
+            if resp.type == "execution":
+                await lead.terminate()
+                return resp
 
     async def _complete_session(self) -> None:
         assert self.current_session is not None

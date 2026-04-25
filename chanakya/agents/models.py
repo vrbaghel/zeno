@@ -167,6 +167,7 @@ class TaskDefinition(BaseModel):
     description: str
     type: TaskTypeLiteral
     agent_type: LeadAgentTypeLiteral
+    provider: str
     room: str
     depends_on: list[str] = Field(default_factory=list)
     parallel_group: str | None = None
@@ -253,7 +254,7 @@ class LeadAgentRequest(BaseModel):
 
 
 class CheckpointOption(BaseModel):
-    key: Literal["approve", "revise", "cancel", "retry", "skip"]
+    key: Literal["approve", "revise", "cancel", "retry", "skip", "a", "b", "c"]
     label: str
 
 
@@ -268,7 +269,10 @@ class CheckpointContent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-def validate_lead_response(response: LeadAgentResponse) -> list[str]:
+def validate_lead_response(
+    response: LeadAgentResponse,
+    available_providers: list[str] | None = None,
+) -> list[str]:
     errors: list[str] = []
     rtype = response.type
 
@@ -317,6 +321,13 @@ def validate_lead_response(response: LeadAgentResponse) -> list[str]:
     task_ids = {t.id for t in response.tasks}
 
     for t in response.tasks:
+        if not (t.provider and t.provider.strip()):
+            errors.append(f"task {t.id}: provider must be present for type=execution")
+        elif available_providers is not None and t.provider not in set(available_providers):
+            errors.append(
+                f"task {t.id}: provider {t.provider!r} is not in available_providers"
+            )
+
         if t.parallel_group is not None:
             pg = t.parallel_group
             if not (len(pg) == 1 and "A" <= pg <= "Z"):

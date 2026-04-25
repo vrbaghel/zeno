@@ -165,15 +165,16 @@ async def print_checkpoint(console: Console, content: CheckpointContent) -> str:
     labels = "   ".join(f"[{o.key[0].upper()}] {o.label}" for o in opts)
     console.print(f"  {labels}")
 
+    key_by_letter = {o.key[0].upper(): o.key for o in opts}
+    key_by_key = {o.key.upper(): o.key for o in opts}
+
     while True:
         raw = (await async_input("  > ")).strip().upper()
-        if raw in ("A", "APPROVE"):
-            return "approve"
-        if raw in ("R", "REVISE"):
-            return "revise"
-        if raw in ("C", "CANCEL"):
-            return "cancel"
-        console.print("  [dim]Enter A, R, or C.[/dim]")
+        if raw in key_by_letter:
+            return key_by_letter[raw]
+        if raw in key_by_key:
+            return key_by_key[raw]
+        console.print("  [dim]Enter one of: " + ", ".join(sorted(key_by_letter.keys())) + ".[/dim]")
 
 
 def print_progress_note(console: Console, message: str, *, ok: bool = False) -> None:

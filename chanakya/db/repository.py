@@ -174,6 +174,17 @@ async def revise_plan(plan_id: uuid.UUID) -> DbExecutionPlan:
         return new
 
 
+async def activate_plan(plan_id: uuid.UUID) -> None:
+    factory = get_session_factory()
+    async with factory() as db:
+        p = await db.get(DbExecutionPlan, plan_id)
+        if p is None:
+            raise KeyError("plan not found")
+        p.status = PlanStatus.active
+        p.updated_at = _now()
+        await db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Wings + rooms
 # ---------------------------------------------------------------------------
@@ -450,6 +461,18 @@ async def get_agent_with_assignments(agent_id: uuid.UUID) -> DbAgent:
         if a is None:
             raise KeyError("agent not found")
         return a
+
+
+async def get_assignment_for_task(task_id: uuid.UUID) -> DbAgentAssignment | None:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(
+            select(DbAgentAssignment)
+            .where(DbAgentAssignment.task_id == task_id)
+            .order_by(DbAgentAssignment.created_at.desc())
+            .limit(1)
+        )
+        return r.scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------

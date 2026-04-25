@@ -26,12 +26,19 @@ def _render_initial_context(context: LeadAgentContext) -> str:
     if not history_blocks.strip():
         history_blocks = "No prior lead agent history"
 
+    providers_block = "\n".join([f"  - {p}" for p in (context.available_providers or [])]).strip()
+    if not providers_block:
+        providers_block = "  (none)"
+
     parts: list[str] = []
     parts.append("=== CURRENT CONTEXT ===")
     parts.append("")
     parts.append(f"Session ID: {context.session_id}")
     parts.append(f"Working Directory: {context.working_directory}")
     parts.append(f"User Prompt: {context.raw_input}")
+    parts.append("")
+    parts.append("Available Providers:")
+    parts.append(providers_block)
     parts.append("")
     parts.append("Existing Rooms: " + existing)
     parts.append("")

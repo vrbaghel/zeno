@@ -4,9 +4,9 @@ Chanakya is a multi-agent orchestration framework.
 
 Phase 1 implements a single CLI command, `chanakya`, that bootstraps configuration, resolves runtime mode, validates the mode, prints a startup summary, and exits.
 
-## Phase 2 (Arthashastra adapters)
+## Phase 2 (Agents adapters)
 
-Phase 2 adds the **Arthashastra** adaptor layer: shared contracts (`AdaptorRequest`, `AdaptorResponse`, `AgentResponse`, metrics, errors) and a **Gemini** CLI adaptor that dispatches requests and returns structured results.
+Phase 2 adds the **Agents** adaptor layer: shared contracts (`AdaptorRequest`, `AdaptorResponse`, `AgentResponse`, metrics, errors) and a **Gemini** CLI adaptor that dispatches requests and returns structured results.
 
 For a quick end-to-end check from the CLI (temporary test hook):
 
@@ -20,8 +20,8 @@ Programmatic usage (same stack the adaptor uses):
 ```python
 import asyncio
 
-from chanakya.arthashastra.models import AdaptorMessage, AdaptorRequest, AdaptorRequestPayload
-from chanakya.arthashastra.registry import AdaptorRegistry
+from chanakya.agents.models import AdaptorMessage, AdaptorRequest, AdaptorRequestPayload
+from chanakya.agents.registry import AdaptorRegistry
 
 
 async def main():
@@ -160,7 +160,7 @@ Phase 5 formalizes the **lead agent request/response** contracts and adds a pers
 
 ### Contracts
 
-Defined in `chanakya/arthashastra/models.py`:
+Defined in `chanakya/agents/models.py`:
 
 - **Clarification flow**:
   - `ClarificationQuestion`
@@ -185,8 +185,16 @@ Defined in `chanakya/arthashastra/models.py`:
 ### Smoke test (contracts)
 
 ```bash
-python -m chanakya.arthashastra.smoke_test
+./.venv/bin/python -m compileall -q chanakya
 ```
+
+## Phase 8A (lead agent foundation)
+
+Phase 8A introduces the lead agent prompt architecture and a unified lead response schema (clarification/execution/terminate), plus a persistent lead-agent subprocess adapter under `chanakya/agents/lead/`.
+
+## Phase 8B (lead agent ↔ orchestrator integration)
+
+Phase 8B wires the lead agent into the orchestrator: the lead agent produces an execution plan, the orchestrator persists it to SQLite (rooms/tasks/dependencies/assignments), supports a HITL clarification loop and plan approval, and routes worker dispatch by provider.
 
 ## Phase 6 (bare orchestrator)
 
