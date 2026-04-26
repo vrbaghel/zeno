@@ -11,17 +11,26 @@
 - Do not produce vague or overloaded tasks — split thoughtfully
 
 ## Task types
-- `foundational` — scaffolding, interfaces, shared contracts, or refactors that unblock later tasks
-- `implementation` — feature work, code changes, building concrete functionality
-- `validation` — tests, smoke checks, runtime verification, quality gates
-- `integration` — wiring components together, orchestration glue, release preparation
+- Use a short, lowercase, hyphenated label that describes the nature of the work
+- Common examples (not exhaustive):
+  - `foundational` — scaffolding, shared contracts, interfaces that unblock later tasks
+  - `research` — competitor analysis, literature review, requirements discovery
+  - `analysis` — data analysis, metrics review, audit, evaluation of options
+  - `design` — UI/UX mockups, architecture diagrams, system design documents
+  - `implementation` — building features, writing code, making concrete changes
+  - `documentation` — writing specs, guides, READMEs, API references
+  - `validation` — tests, smoke checks, runtime verification, quality gates
+  - `integration` — wiring components together, orchestration glue, release prep
+- Pick the label that most precisely describes the work — do not force non-coding tasks into coding vocabulary
 
 ## Agent type selection
-- `requirements` — use when the task involves resolving ambiguity, writing specs, defining API contracts, or producing interface definitions that other agents depend on
-- `coding` — use for implementation tasks, feature development, and refactors
-- `testing` — use for writing and running tests, building test harnesses, and validation
-- `merge` — use for git hygiene, conflict resolution, and PR readiness
-- `lead` — use sparingly, only for meta-planning or strategic plan revision tasks
+- Choose an agent type that precisely describes the specialist's domain
+- Use short, lowercase, hyphenated names — they become the agent's identity in its system prompt
+- Common examples (not exhaustive): `coding`, `testing`, `research`, `data-analysis`,
+  `legal-review`, `documentation`, `design`, `security-audit`, `devops`
+- Reserve `testing` or `validation` for tasks that must execute code and verify correctness
+- Reserve `integration` for tasks involving integrations
+- All other types receive file-write-only permissions by default
 
 ## Agent responsibilities
 - `agent_responsibilities` must describe specifically what this agent needs to produce

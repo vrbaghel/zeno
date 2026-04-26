@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import uuid
 
 from zeno.agents.models import ExecutionPlanResponse, validate_lead_response
-from zeno.db.models import AgentType, DbExecutionPlan, TaskType
+from zeno.db.models import DbExecutionPlan
 from zeno.memory.models import MemTrace
 from zeno.memory.store import save_trace
 from zeno.orchestrator.errors import StorageError, ValidationError
@@ -65,7 +65,7 @@ class ExecutionPlanner:
                     session_id=session.id,
                     title=t.title,
                     description=t.description,
-                    task_type=TaskType(t.type),
+                    task_type=t.type,
                     priority=idx + 1,
                     parallel_group=t.parallel_group,
                     checkpoint_before=bool(t.checkpoint_before),
@@ -108,7 +108,7 @@ class ExecutionPlanner:
                 if existing is None:
                     existing = await self.db_repo.create_agent(
                         name=agent_name,
-                        agent_type=AgentType(t.agent_type),
+                        agent_type=t.agent_type,
                         system_prompt=_placeholder_system_prompt(t.agent_type),
                     )
                 agent_id_by_key[key] = existing.id
@@ -150,7 +150,7 @@ class ExecutionPlanner:
             if lead_agent is None:
                 lead_agent = await self.db_repo.create_agent(
                     name=lead_agent_name,
-                    agent_type=AgentType.lead,
+                    agent_type="lead",
                     system_prompt=_placeholder_system_prompt("lead"),
                 )
 

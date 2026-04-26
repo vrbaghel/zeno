@@ -53,28 +53,12 @@ class PlanStatus(str, enum.Enum):
     revised = "revised"
 
 
-class TaskType(str, enum.Enum):
-    foundational = "foundational"
-    implementation = "implementation"
-    validation = "validation"
-    integration = "integration"
-
-
 class TaskStatus(str, enum.Enum):
     pending = "pending"
     running = "running"
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"
-
-
-class AgentType(str, enum.Enum):
-    lead = "lead"
-    coding = "coding"
-    testing = "testing"
-    requirements = "requirements"
-    integration = "integration"
-    other = "other"
 
 
 class Provider(str, enum.Enum):
@@ -217,11 +201,7 @@ class DbTask(Base):
     )
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    type: Mapped[TaskType] = mapped_column(
-        "type",
-        Enum(TaskType, values_callable=_values, native_enum=False, length=32),
-        nullable=False,
-    )
+    type: Mapped[str] = mapped_column("type", String(64), nullable=False)
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus, values_callable=_values, native_enum=False, length=32),
         nullable=False,
@@ -261,11 +241,7 @@ class DbAgent(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    type: Mapped[AgentType] = mapped_column(
-        "type",
-        Enum(AgentType, values_callable=_values, native_enum=False, length=32),
-        nullable=False,
-    )
+    type: Mapped[str] = mapped_column("type", String(64), nullable=False)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
 
     assignments: Mapped[list["DbAgentAssignment"]] = relationship(back_populates="agent")

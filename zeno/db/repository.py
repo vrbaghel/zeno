@@ -12,7 +12,6 @@ from zeno.agents.models import AgentArtifacts
 from zeno.agents.models import WorkerMetrics
 from zeno.db.engine import get_session_factory
 from zeno.db.models import (
-    AgentType,
     ArtifactOperation,
     AssignmentStatus,
     CheckpointStatus,
@@ -31,7 +30,6 @@ from zeno.db.models import (
     PlanStatus,
     SessionStatus,
     TaskStatus,
-    TaskType,
 )
 from zeno.core.enums import ExecutionMode, OrchestratorState
 
@@ -333,13 +331,13 @@ async def create_task(
     session_id: uuid.UUID,
     title: str,
     description: str,
-    task_type: TaskType,
+    task_type: str,
     *,
     priority: int = 100,
     parallel_group: str | None = None,
     checkpoint_before: bool = False,
 ) -> DbTask:
-    logger.debug("create_task | session_id=%s title=%s type=%s", session_id, title, task_type.value)
+    logger.debug("create_task | session_id=%s title=%s type=%s", session_id, title, task_type)
     factory = get_session_factory()
     async with factory() as db:
         t = DbTask(
@@ -503,7 +501,7 @@ async def get_tasks_with_worktrees(session_id: uuid.UUID) -> list[DbTask]:
 
 async def create_agent(
     name: str,
-    agent_type: AgentType,
+    agent_type: str,
     system_prompt: str,
     *,
     agent_id: uuid.UUID | None = None,

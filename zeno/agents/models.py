@@ -90,16 +90,12 @@ class RoomDefinition(BaseModel):
     description: str
 
 
-TaskTypeLiteral = Literal["foundational", "implementation", "validation", "integration"]
-LeadAgentTypeLiteral = Literal["requirements", "coding", "testing", "merge", "lead"]
-
-
 class TaskDefinition(BaseModel):
     id: str
     title: str
     description: str
-    type: TaskTypeLiteral
-    agent_type: LeadAgentTypeLiteral
+    type: str
+    agent_type: str
     room: str
     agent_responsibilities: str | None = None
     depends_on: list[str] = Field(default_factory=list)

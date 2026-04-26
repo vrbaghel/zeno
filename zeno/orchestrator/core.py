@@ -29,7 +29,7 @@ from zeno.cli import display as cli_display
 from zeno.core.enums import ExecutionMode, OrchestratorState
 from zeno.db import repository as db_repository
 from zeno.db.engine import dispose_db_engine
-from zeno.db.models import AgentType, DbExecutionPlan, DbSession, DbTask, PlanStatus, SessionStatus, TaskStatus
+from zeno.db.models import DbExecutionPlan, DbSession, DbTask, PlanStatus, SessionStatus, TaskStatus
 from zeno.memory.models import MemLog, MemTrace, MemVault
 from zeno.memory.mind import initialize_vault as initialize_mem_vault
 from zeno.memory.retrieval import build_context
@@ -565,7 +565,7 @@ class OrchestratorCore:
             if agent is None:
                 agent = await self.db_repo.create_agent(
                     name=agent_name,
-                    agent_type=AgentType.other,
+                    agent_type="other",
                     system_prompt="(dynamic)",
                 )
             assignment = await self.db_repo.create_assignment(
@@ -733,7 +733,7 @@ class OrchestratorCore:
         if merge_agent is None:
             merge_agent = await self.db_repo.create_agent(
                 name=merge_agent_name,
-                agent_type=AgentType.integration,
+                agent_type="integration",
                 system_prompt="(dynamic)",
             )
 

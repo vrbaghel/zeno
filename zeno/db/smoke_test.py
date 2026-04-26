@@ -13,7 +13,6 @@ import uuid
 
 from zeno.db import engine as engine_mod
 from zeno.core.enums import ExecutionMode
-from zeno.db.models import TaskType
 from zeno.db.repository import (
     add_task_dependency,
     create_execution_plan,
@@ -50,7 +49,7 @@ async def main() -> None:
         sid,
         "A",
         "root",
-        TaskType.foundational,
+        "foundational",
         priority=1,
     )
     t2 = await create_task(
@@ -58,7 +57,7 @@ async def main() -> None:
         sid,
         "B",
         "depends on A",
-        TaskType.implementation,
+        "implementation",
         priority=2,
     )
     t3 = await create_task(
@@ -66,7 +65,7 @@ async def main() -> None:
         sid,
         "C",
         "depends on B",
-        TaskType.validation,
+        "validation",
         priority=3,
     )
     await add_task_dependency(t2.id, t1.id)
