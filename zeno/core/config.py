@@ -15,30 +15,14 @@ DEFAULT_CONFIG_PATH = Path.home() / ".zeno" / "config.toml"
 class ZenoSettings(BaseSettings):
     """
     Phase 1 settings:
-    - mode: optional
-    - API keys: optional (required only if mode resolves to api)
-
-    Phase 6 settings:
     - orchestrator_timeout_seconds: optional
     """
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    mode: str | None = None
-
-    openai_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
-    anthropic_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
-    gemini_key: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-    )
-
     orchestrator_timeout_seconds: float = Field(
         default=120.0,
-        validation_alias=AliasChoices(
-            "ORCHESTRATOR_TIMEOUT_SECONDS",
-            "ZENO_ORCHESTRATOR_TIMEOUT_SECONDS",
-        ),
+        validation_alias=AliasChoices("ORCHESTRATOR_TIMEOUT_SECONDS", "ZENO_ORCHESTRATOR_TIMEOUT_SECONDS"),
     )
 
 

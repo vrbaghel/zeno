@@ -37,4 +37,8 @@ def parse_input(raw: str) -> SlashCommand | TaskInput:
 
 async def async_input(prompt: str) -> str:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, input, prompt)
+    try:
+        return await loop.run_in_executor(None, input, prompt)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Propagate Ctrl+C cancellation to the main loop.
+        raise

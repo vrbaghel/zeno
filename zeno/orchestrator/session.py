@@ -4,10 +4,9 @@ import logging
 from pathlib import Path
 
 from zeno.core.enums import ExecutionMode, OrchestratorState
-from zeno.core.mode import OperationMode
+from zeno.db.engine import create_all_tables
 from zeno.db.models import DbSession, SessionStatus
 from zeno.memory import mind
-from zeno.agents.registry import AdaptorRegistry
 from zeno.orchestrator.errors import InitializationError, StorageError
 from zeno.orchestrator.git import ensure_git_initialized
 
@@ -32,9 +31,21 @@ async def prepare_workspace(working_directory: str, *, db_repo) -> tuple[str, st
     await ensure_git_initialized(wd)
 
     try:
+        # Ensure SQLite schema exists before mind init touches vault/room tables.
+        await create_all_tables()
+    except Exception as e:
+        raise InitializationError(
+            "Failed to initialize SQLite schema",
+            detail=f"{type(e).__name__}: {e}",
+        ) from e
+
+    try:
         vault = await mind.initialize_vault(wd)
     except Exception as e:
-        raise InitializationError("Failed to initialize mind storage", detail=str(e)) from e
+        raise InitializationError(
+            "Failed to initialize mind storage",
+            detail=f"{type(e).__name__}: {e}",
+        ) from e
 
     try:
         existing = await db_repo.get_vault_by_path(wd)
@@ -49,14 +60,10 @@ async def prepare_workspace(working_directory: str, *, db_repo) -> tuple[str, st
 async def initialize_session(
     raw_input: str,
     execution_mode: ExecutionMode,
-    operation_mode: OperationMode,
     working_directory: str,
     *,
     db_repo,
-) -> tuple[DbSession, list[str]]:
-    """
-    Returns (DbSession, available_providers).
-    """
+) -> DbSession:
     _vault_name, wd = await prepare_workspace(working_directory, db_repo=db_repo)
 
     try:
@@ -68,21 +75,13 @@ async def initialize_session(
     except Exception as e:
         raise StorageError("Failed to create session in SQLite", detail=str(e)) from e
 
-    # Phase 8B: Providers available for this run.
-    # Today, we only support adaptor-based mode; api mode is not implemented.
-    # Still probe registry so the lead agent can assign providers correctly.
-    if operation_mode != OperationMode.adapter:
-        logger.warning("operation_mode=%s is not implemented; probing adaptor registry anyway", operation_mode)
-    registry = AdaptorRegistry.discover()
-    providers = registry.available()
-
     try:
         await db_repo.update_orchestrator_state(session.id, OrchestratorState.INITIALIZING)
         await db_repo.update_orchestrator_state(session.id, OrchestratorState.AWAITING_LEAD)
     except Exception as e:
         raise StorageError("Failed to update orchestrator state in SQLite", detail=str(e)) from e
 
-    return session, providers
+    return session
 
 
 async def teardown_session(

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from zeno.agents.models import LeadAgentResponse, validate_lead_response
-from zeno.db.models import AgentMode, AgentType, DbExecutionPlan, Provider, TaskType
+import uuid
+
+from zeno.agents.models import ExecutionPlanResponse, validate_lead_response
+from zeno.db.models import AgentType, DbExecutionPlan, TaskType
 from zeno.memory.models import MemTrace
 from zeno.memory.store import save_trace
 from zeno.orchestrator.errors import StorageError, ValidationError
@@ -17,17 +19,13 @@ class ExecutionPlanner:
 
     async def build_plan(
         self,
-        response: LeadAgentResponse,
+        response: ExecutionPlanResponse,
         *,
         session,
-        available_providers: list[str],
     ) -> DbExecutionPlan:
-        errs = validate_lead_response(response, available_providers=available_providers)
+        errs = validate_lead_response(response)
         if errs:
             raise ValidationError("Lead agent response failed validation", detail="\n".join(errs))
-
-        if response.rooms is None or response.tasks is None or response.log is None:
-            raise ValidationError("Lead agent response missing required execution fields")
 
         # 2) Create plan
         try:
@@ -77,15 +75,15 @@ class ExecutionPlanner:
                 except Exception as e:
                     raise StorageError(f"Failed to add dependency {t.id} -> {dep_local}", detail=str(e)) from e
 
-        # 7) Create agents (unique agent_type/provider)
-        agent_id_by_key: dict[tuple[str, str], uuid.UUID] = {}
+        # 7) Create agents (unique agent_type; provider is fixed for now)
+        agent_id_by_key: dict[str, uuid.UUID] = {}
         for t in response.tasks:
-            key = (t.agent_type, t.provider)
+            key = t.agent_type
             if key in agent_id_by_key:
                 continue
 
             # Stable name to avoid duplicates across runs.
-            agent_name = f"{t.provider}-{t.agent_type}"
+            agent_name = f"{t.agent_type}-agent"
             try:
                 existing = await self.db_repo.get_agent_by_name(agent_name)
                 if existing is None:
@@ -93,8 +91,6 @@ class ExecutionPlanner:
                         name=agent_name,
                         agent_type=AgentType(t.agent_type),
                         system_prompt=_placeholder_system_prompt(t.agent_type),
-                        provider=Provider(t.provider),
-                        mode=AgentMode.adapter,
                     )
                 agent_id_by_key[key] = existing.id
             except Exception as e:
@@ -103,7 +99,7 @@ class ExecutionPlanner:
         # 8) Assignments
         for t in response.tasks:
             try:
-                agent_id = agent_id_by_key[(t.agent_type, t.provider)]
+                agent_id = agent_id_by_key[t.agent_type]
                 await self.db_repo.create_assignment(
                     task_id=created_task_uuid_by_local[t.id],
                     session_id=session.id,
@@ -135,8 +131,6 @@ class ExecutionPlanner:
                     name=lead_agent_name,
                     agent_type=AgentType.lead,
                     system_prompt=_placeholder_system_prompt("lead"),
-                    provider=Provider("gemini"),
-                    mode=AgentMode.adapter,
                 )
 
             trace = MemTrace(

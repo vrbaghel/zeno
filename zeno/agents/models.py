@@ -1,137 +1,70 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import datetime
 from typing import Any, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from zeno.core.enums import OrchestratorState
 from zeno.memory.models import MemLog
 
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+AgentRole = Literal["system", "user", "assistant", "tool"]
 
 
-AdaptorRole = Literal["system", "user", "assistant", "tool"]
-
-
-class AdaptorMessage(BaseModel):
-    role: AdaptorRole
+class AgentMessage(BaseModel):
+    role: AgentRole
     content: str
 
 
-class AdaptorArtifacts(BaseModel):
+class AgentArtifacts(BaseModel):
     created: list[str] = Field(default_factory=list)
     updated: list[str] = Field(default_factory=list)
     deleted: list[str] = Field(default_factory=list)
 
 
-class AdaptorRequestPayload(BaseModel):
-    system: str | None = None
-    messages: list[AdaptorMessage] = Field(default_factory=list)
-    tools: list[dict] = Field(default_factory=list)
-
-
-class AdaptorRequest(BaseModel):
-    id: UUID = Field(default_factory=uuid4)
-    session_id: UUID = Field(default_factory=uuid4)
-    agent_id: str
-    created_at: datetime = Field(default_factory=utc_now)
-    payload: AdaptorRequestPayload = Field(default_factory=AdaptorRequestPayload)
-    timeout_seconds: float | None = 120.0
-
-
-class AdaptorResponseStatus(str, Enum):
-    success = "success"
-    error = "error"
-    timeout = "timeout"
-    truncated = "truncated"
-
-
-class AdaptorResponsePayload(BaseModel):
-    messages: list[AdaptorMessage] = Field(default_factory=list)
-
-
-class DiaryEntry(BaseModel):
-    summary: str
-    decisions: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
-    dependencies: list[str] = Field(default_factory=list)
-    open_issues: list[str] = Field(default_factory=list)
-    room: str
-
-
 class AgentResponse(BaseModel):
-    status: Literal["success", "error", "truncated"]
-    payload: AdaptorResponsePayload = Field(default_factory=AdaptorResponsePayload)
-    artifacts: AdaptorArtifacts = Field(default_factory=AdaptorArtifacts)
-    log: DiaryEntry | None = None
+    """
+    Minimal response contract Zeno needs back from an agent under the SDK model:
+    - summary: what was done
+    - artifacts: files created/updated/deleted
+    - log: MemLog diary entry for ChromaDB
+    """
+
+    summary: str
+    artifacts: AgentArtifacts = Field(default_factory=AgentArtifacts)
+    log: MemLog
 
 
-class AdaptorResponse(BaseModel):
-    id: UUID = Field(default_factory=uuid4)
-    request_id: UUID
-    session_id: UUID
-    agent_id: str
-    status: AdaptorResponseStatus
-    created_at: datetime = Field(default_factory=utc_now)
-    payload: AdaptorResponsePayload = Field(default_factory=AdaptorResponsePayload)
-    artifacts: AdaptorArtifacts = Field(default_factory=AdaptorArtifacts)
+class WorkerResponse(BaseModel):
+    summary: str
+    artifacts: AgentArtifacts = Field(default_factory=AgentArtifacts)
+    log: MemLog
 
 
-class AdaptorErrorCode(str, Enum):
-    ADAPTOR_NOT_FOUND = "ADAPTOR_NOT_FOUND"
-    ADAPTOR_SPAWN_FAILED = "ADAPTOR_SPAWN_FAILED"
-    ADAPTOR_TIMEOUT = "ADAPTOR_TIMEOUT"
-    ADAPTOR_PARSE_ERROR = "ADAPTOR_PARSE_ERROR"
-    CONTEXT_OVERFLOW = "CONTEXT_OVERFLOW"
-    RESPONSE_TRUNCATED = "RESPONSE_TRUNCATED"
-    UNKNOWN = "UNKNOWN"
-
-
-class AdaptorError(BaseModel):
-    id: UUID = Field(default_factory=uuid4)
-    request_id: UUID | None = None
-    agent_id: str | None = None
-    created_at: datetime = Field(default_factory=utc_now)
-    code: AdaptorErrorCode
-    message: str
-    recoverable: bool = False
-
-
-class AdaptorTimingMetrics(BaseModel):
-    queued_at: datetime | None = None
-    dispatched_at: datetime | None = None
+class WorkerMetrics(BaseModel):
+    queued_at: datetime
     first_token_at: datetime | None = None
-    completed_at: datetime | None = None
-    latency_ms: int | None = None
+    completed_at: datetime
+
+    latency_ms: int
     time_to_first_token_ms: int | None = None
 
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
 
-class AdaptorTokenMetrics(BaseModel):
-    input: int | None = None
-    output: int | None = None
-    total: int | None = None
-    deviation: str | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
 
-
-class AdaptorArtifactMetrics(BaseModel):
-    created_count: int = 0
-    updated_count: int = 0
-    deleted_count: int = 0
-
-
-class AdaptorMetrics(BaseModel):
-    timing: AdaptorTimingMetrics = Field(default_factory=AdaptorTimingMetrics)
-    tokens: AdaptorTokenMetrics = Field(default_factory=AdaptorTokenMetrics)
-    artifacts: AdaptorArtifactMetrics = Field(default_factory=AdaptorArtifactMetrics)
-    agent_id: str
-    mode: Literal["adapter", "api"]
-    provider: Literal["gemini", "anthropic", "openai"]
+    cost_usd: float | None = None
     model: str | None = None
+    num_turns: int | None = None
+
+
+class TerminateResponse(BaseModel):
+    type: Literal["terminate"] = "terminate"
+    reason: str
 
 
 # ---------------------------------------------------------------------------
@@ -144,12 +77,6 @@ class ClarificationQuestion(BaseModel):
     question: str
     options: list[str] | None = None
     required: bool = True
-
-
-class ClarificationResponse(BaseModel):
-    type: Literal["clarification"] = "clarification"
-    questions: list[ClarificationQuestion] = Field(default_factory=list)
-    context: str
 
 
 class RoomDefinition(BaseModel):
@@ -167,8 +94,8 @@ class TaskDefinition(BaseModel):
     description: str
     type: TaskTypeLiteral
     agent_type: LeadAgentTypeLiteral
-    provider: str
     room: str
+    agent_responsibilities: str | None = None
     depends_on: list[str] = Field(default_factory=list)
     parallel_group: str | None = None
     checkpoint_before: bool = False
@@ -180,48 +107,25 @@ class ExecutionPlanResponse(BaseModel):
     rooms: list[RoomDefinition] = Field(default_factory=list)
     tasks: list[TaskDefinition] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
-    log: DiaryEntry
+    log: MemLog
 
 
-# ---------------------------------------------------------------------------
-# Phase 8A: Unified lead agent response schema
-# ---------------------------------------------------------------------------
+WORKER_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "schema": WorkerResponse.model_json_schema(),
+}
 
 
-class OptionDefinition(BaseModel):
-    label: str
-    description: str
-
-
-class UserOptions(BaseModel):
-    option_a: OptionDefinition
-    option_b: OptionDefinition
-    option_c: OptionDefinition
-
-
-class LeadAgentResponse(BaseModel):
-    type: Literal["execution", "clarification", "terminate"]
-
-    # clarification
-    question: str | None = None
-    context: str | None = None
-    options: UserOptions | None = None
-
-    # execution
-    task_summary: str | None = None
-    rooms: list[RoomDefinition] | None = None
-    tasks: list[TaskDefinition] | None = None
-    assumptions: list[str] | None = None
-    log: MemLog | None = None
-
-    # terminate
-    reason: str | None = None
+EXECUTION_PLAN_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "schema": ExecutionPlanResponse.model_json_schema(),
+}
 
 
 class ClarificationInput(BaseModel):
     type: Literal["clarification_response"] = "clarification_response"
     question: str
-    choice: Literal["a", "b", "c"]
+    choice: str
     label: str
 
 
@@ -254,7 +158,7 @@ class LeadAgentRequest(BaseModel):
 
 
 class CheckpointOption(BaseModel):
-    key: Literal["approve", "revise", "cancel", "retry", "skip", "a", "b", "c"]
+    key: Literal["approve", "revise", "cancel", "retry", "skip", "a", "b", "c", "d"]
     label: str
 
 
@@ -270,64 +174,24 @@ class CheckpointContent(BaseModel):
 
 
 def validate_lead_response(
-    response: LeadAgentResponse,
-    available_providers: list[str] | None = None,
+    response: ExecutionPlanResponse,
 ) -> list[str]:
     errors: list[str] = []
-    rtype = response.type
-
-    if rtype not in {"execution", "clarification", "terminate"}:
-        errors.append('type must be exactly "execution" | "clarification" | "terminate"')
+    if response.type != "execution_plan":
+        errors.append('type must be exactly "execution_plan"')
         return errors
 
-    if rtype == "clarification":
-        if not (response.question and response.question.strip()):
-            errors.append("question must be non-empty for type=clarification")
-
-        if response.options is None:
-            errors.append("options must be present for type=clarification")
-            return errors
-
-        # Ensure the three options exist and labels are non-empty.
-        for key, opt in (
-            ("option_a", response.options.option_a),
-            ("option_b", response.options.option_b),
-            ("option_c", response.options.option_c),
-        ):
-            if opt is None:
-                errors.append(f"{key} must be non-null for type=clarification")
-                continue
-            if not (opt.label and opt.label.strip()):
-                errors.append(f"{key}.label must be a non-empty string for type=clarification")
-
-        return errors
-
-    if rtype == "terminate":
-        if not (response.reason and response.reason.strip()):
-            errors.append("reason must be non-empty string for type=terminate")
-        return errors
-
-    # execution rules
     if not response.tasks:
-        errors.append("tasks must be non-empty list for type=execution")
+        errors.append("tasks must be non-empty list for type=execution_plan")
         return errors
     if not response.rooms:
-        errors.append("rooms must be non-empty list for type=execution")
+        errors.append("rooms must be non-empty list for type=execution_plan")
         return errors
-    if response.log is None:
-        errors.append("log must be present for type=execution")
 
     room_names = {r.name for r in response.rooms}
     task_ids = {t.id for t in response.tasks}
 
     for t in response.tasks:
-        if not (t.provider and t.provider.strip()):
-            errors.append(f"task {t.id}: provider must be present for type=execution")
-        elif available_providers is not None and t.provider not in set(available_providers):
-            errors.append(
-                f"task {t.id}: provider {t.provider!r} is not in available_providers"
-            )
-
         if t.parallel_group is not None:
             pg = t.parallel_group
             if not (len(pg) == 1 and "A" <= pg <= "Z"):

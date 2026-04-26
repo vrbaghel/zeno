@@ -64,6 +64,32 @@ class UnknownError(ZenoError):
         super().__init__(code="UNKNOWN_ERROR", message=message, detail=detail)
 
 
+def map_sdk_error(error: Exception) -> ZenoError:
+    try:
+        from claude_agent_sdk import CLINotFoundError, CLIConnectionError, ProcessError
+
+        if isinstance(error, CLINotFoundError):
+            return InitializationError(
+                "Claude Agent SDK not found. Ensure Claude Code is installed.",
+                detail=str(error),
+            )
+        if isinstance(error, CLIConnectionError):
+            return DispatchError(
+                "Failed to connect to Claude Agent SDK.",
+                detail=str(error),
+            )
+        if isinstance(error, ProcessError):
+            return DispatchError(
+                "Claude Agent SDK process failed.",
+                detail=str(error),
+            )
+    except Exception:
+        # SDK not importable; fall through.
+        pass
+
+    return UnknownError(str(error), detail=repr(error))
+
+
 async def persist_session_failure(
     error: ZenoError,
     session_id: UUID | None,

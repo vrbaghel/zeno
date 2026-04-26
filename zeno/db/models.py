@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Float,
     Integer,
     String,
     Text,
@@ -143,6 +144,7 @@ class DbSession(Base):
     )
     working_directory: Mapped[str] = mapped_column(Text, nullable=False)
     raw_input: Mapped[str] = mapped_column(Text, nullable=False)
+    lead_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     execution_plans: Mapped[list[DbExecutionPlan]] = relationship(back_populates="session")
     tasks: Mapped[list[DbTask]] = relationship(
@@ -265,12 +267,6 @@ class DbAgent(Base):
         nullable=False,
     )
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    provider: Mapped[Provider] = mapped_column(
-        Enum(Provider, values_callable=_values, native_enum=False, length=32), nullable=False
-    )
-    mode: Mapped[AgentMode] = mapped_column(
-        Enum(AgentMode, values_callable=_values, native_enum=False, length=32), nullable=False
-    )
 
     assignments: Mapped[list["DbAgentAssignment"]] = relationship(back_populates="agent")
 
@@ -320,8 +316,11 @@ class DbTaskMetrics(Base):
     tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    tokens_estimated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    token_deviation: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_creation_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    num_turns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     artifacts_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     artifacts_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     artifacts_deleted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -41,7 +41,13 @@ def _collection_name(vault_name: str) -> str:
 def _get_client(working_directory: str) -> chromadb.PersistentClient:
     persist_dir = _chroma_persist_dir(working_directory)
     persist_dir.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=str(persist_dir))
+    try:
+        return chromadb.PersistentClient(path=str(persist_dir))
+    except Exception as e:
+        # Surface the actual Chroma failure + the path we attempted.
+        raise RuntimeError(
+            f"ChromaDB PersistentClient init failed (path={persist_dir})"
+        ) from e
 
 
 def _ensure_collection(working_directory: str, *, vault_name: str) -> None:

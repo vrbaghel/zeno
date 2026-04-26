@@ -13,12 +13,12 @@ authors = [{ name = "Vinayak Baghel" }]
 dependencies = [
   "aiosqlite>=0.20.0",
   "alembic>=1.13.0",
+  "claude-agent-sdk",
   "chromadb>=0.5.0",
   "pydantic>=2.0.0",
   "pydantic-settings>=2.0.0",
   "rich>=13.0.0",
   "sqlalchemy[asyncio]>=2.0.0",
-  "tiktoken>=0.7.0",
   "typer>=0.12.0",
 ]
 

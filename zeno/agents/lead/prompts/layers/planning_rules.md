@@ -23,13 +23,6 @@ Decompose the user's request into a practical, correct plan.
 - `merge`: git hygiene, PR readiness, conflict resolution
 - `lead`: strategic plan revision, meta planning (use sparingly)
 
-## Provider assignment
-- You will be given a list of available providers.
-- Assign the most appropriate provider for each task based on the task type and provider capabilities.
-- Every task must have a provider assigned.
-- You may only assign providers from the available list.
-- If only one provider is available, assign it to all tasks.
-
 ## Dependencies
 - Dependencies must be exhaustive.
 - `depends_on` must only reference task ids within the same response.

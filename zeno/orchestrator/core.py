@@ -5,46 +5,37 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
+from uuid import UUID
 
 from rich.console import Console
 
 from zeno.agents.lead.adapter import LeadAgentAdapter, LeadAgentContext
-from zeno.agents.lead.composer import compose_prompt
 from zeno.agents.models import (
     AgentContext,
     CheckpointContent,
     CheckpointOption,
-    ClarificationInput,
-    LeadAgentResponse,
+    ClarificationAnswer,
+    ClarificationQuestion,
+    ExecutionPlanResponse,
 )
-from zeno.agents.registry import AdaptorRegistry
+from zeno.agents.worker.adapter import WorkerAdapter
 from zeno.cli import display as cli_display
-from zeno.core.config import load_config
-from zeno.core.enums import ExecutionMode, LeadAgentStage, OrchestratorState
-from zeno.core.mode import OperationMode
+from zeno.core.enums import ExecutionMode, OrchestratorState
 from zeno.db import repository as db_repository
 from zeno.db.engine import dispose_db_engine
-from zeno.db.models import (
-    AgentMode,
-    AgentType,
-    DbSession,
-    DbTask,
-    Provider,
-    SessionStatus,
-    TaskType,
-)
+from zeno.db.models import DbExecutionPlan, DbSession, DbTask, SessionStatus, TaskStatus
 from zeno.memory.models import MemVault
 from zeno.memory.mind import initialize_vault as initialize_mem_vault
 from zeno.memory.retrieval import build_context
 from zeno.memory.store import save_trace
 from zeno.orchestrator import git as git_ops
-from zeno.orchestrator.dispatch import dispatch_agent
 from zeno.orchestrator.errors import (
-    ZenoError,
+    DispatchError,
     InitializationError,
-    LeadAgentTerminationError,
     StorageError,
     UnknownError,
+    ValidationError,
+    ZenoError,
     persist_session_failure,
 )
 from zeno.orchestrator.session import initialize_session, prepare_workspace, teardown_session
@@ -82,42 +73,45 @@ class OrchestratorCore:
         self,
         *,
         execution_mode: ExecutionMode,
-        operation_mode: OperationMode,
         working_directory: str,
         hitl_callback: Callable[[CheckpointContent], Awaitable[str]] | None = None,
     ) -> None:
         self.execution_mode = execution_mode
-        self.operation_mode = operation_mode
         self.working_directory = str(Path(working_directory).resolve())
         self.hitl_callback = hitl_callback
-        self.available_providers: list[str] = []
 
         self.current_session: DbSession | None = None
         self._vault: MemVault | None = None
+        self._vault_name: str | None = None
 
-        self.registry = AdaptorRegistry.discover()
+        self.lead_adapter: LeadAgentAdapter | None = None
+        self.worker_adapter: WorkerAdapter | None = None
+
         self.db_repo = db_repository
         self._sm = _StateMachine.phase6()
-
         self._rich_console = Console()
 
     async def initialize_runtime(self) -> None:
-        if self.operation_mode == OperationMode.adapter and not self.registry.available():
-            raise InitializationError("No adaptors available (is `gemini` on PATH?)")
         vault_name, _wd = await prepare_workspace(self.working_directory, db_repo=self.db_repo)
         self._vault = await initialize_mem_vault(self.working_directory)
+        self._vault_name = vault_name
         if self._vault.name != vault_name:
             logger.warning("vault name mismatch: %s vs %s", self._vault.name, vault_name)
+        self.worker_adapter = WorkerAdapter(working_directory=self.working_directory)
 
     @property
     def vault_name(self) -> str:
-        if self._vault is None:
+        if self._vault is None or self._vault_name is None:
             raise InitializationError("Orchestrator runtime not initialized")
-        return self._vault.name
+        return self._vault_name
 
     async def _transition(self, new_state: OrchestratorState) -> None:
         assert self.current_session is not None
         old_state = await self.db_repo.get_orchestrator_state(self.current_session.id)
+
+        # Treat self-transitions as idempotent no-ops.
+        if old_state == new_state:
+            return
 
         if not self._sm.can_transition(old_state, new_state):
             raise UnknownError(
@@ -128,58 +122,31 @@ class OrchestratorCore:
         await self.db_repo.update_orchestrator_state(self.current_session.id, new_state)
         cli_display.print_state_transition(self._rich_console, new_state)
 
-    async def _create_checkpoint(self, content: CheckpointContent) -> str:
-        if self.hitl_callback is None:
-            raise UnknownError(
-                "HITL checkpoint requested but no callback is configured",
-                detail="execution_mode or hitl_callback mismatch",
-            )
-        return await self.hitl_callback(content)
-
-    async def _hitl_checkpoint_for_tasks(self, tasks: list[DbTask]) -> None:
-        if self.execution_mode != ExecutionMode.HITL or self.hitl_callback is None:
-            return
-        for t in tasks:
-            if not getattr(t, "checkpoint_before", False):
-                continue
-            content = CheckpointContent(
-                type="pre_fanout",
-                title=f"Before task: {getattr(t, 'title', '')}",
-                description="This task is marked checkpoint_before. Choose how to proceed.",
-                options=[],
-            )
-            await self._create_checkpoint(content)
-
     async def run(self, raw_input: str) -> bool:
-        """
-        Run one user prompt (one DbSession). Returns True on success, False on failure
-        (errors are logged and printed; session is marked failed in SQLite).
-        """
         if self._vault is None:
             raise InitializationError("Call initialize_runtime() before run()")
+        if self.worker_adapter is None:
+            raise InitializationError("Worker adapter not initialized")
 
-        t0 = perf_counter()
         self.current_session = None
-        metrics = None
         success = False
+        t0 = perf_counter()
         try:
-            session, providers = await initialize_session(
+            session = await initialize_session(
                 raw_input=raw_input,
                 execution_mode=self.execution_mode,
-                operation_mode=self.operation_mode,
                 working_directory=self.working_directory,
                 db_repo=self.db_repo,
             )
             self.current_session = session
-            self.available_providers = providers
 
             st = await self.db_repo.get_orchestrator_state(session.id)
             cli_display.print_state_transition(self._rich_console, st)
 
             # Lead agent planning
             lead_plan = await self._dispatch_lead_agent(
-                stage=LeadAgentStage.INITIAL,
                 raw_input=raw_input,
+                stage="initial",
                 current_plan=None,
                 completed_tasks=None,
                 revision_reason=None,
@@ -192,26 +159,31 @@ class OrchestratorCore:
                 working_directory=self.working_directory,
                 vault_name=self.vault_name,
             )
-            plan = await planner.build_plan(
-                lead_plan,
-                session=session,
-                available_providers=self.available_providers,
-            )
+            plan = await planner.build_plan(lead_plan, session=session)
 
-            # HITL plan approval loop
+            # Persist lead SDK session id for later resumption (revision).
+            if self.lead_adapter and self.lead_adapter.session_id:
+                await self.db_repo.update_session_lead_session_id(session.id, self.lead_adapter.session_id)
+
+            # HITL plan approval (A/B/C)
             if self.execution_mode == ExecutionMode.HITL and self.hitl_callback is not None:
                 while True:
-                    action = await self._create_checkpoint(
+                    choice = await self._create_checkpoint(
                         CheckpointContent(
                             type="plan_approval",
                             title="Approve execution plan?",
-                            description="Approve to begin execution, revise to modify the plan, or cancel to abort.",
-                            options=[],
+                            description="A: Approve  B: Cancel  C: Modify",
+                            options=[
+                                CheckpointOption(key="a", label="Approve"),
+                                CheckpointOption(key="b", label="Cancel"),
+                                CheckpointOption(key="c", label="Modify"),
+                            ],
+                            payload={},
                         )
                     )
-                    if action == "approve":
+                    if choice == "a":
                         break
-                    if action == "cancel":
+                    if choice == "b":
                         await teardown_session(
                             session.id,
                             status=SessionStatus.aborted,
@@ -219,111 +191,27 @@ class OrchestratorCore:
                             db_repo=self.db_repo,
                         )
                         return False
-                    if action == "revise":
-                        lead_plan = await self._dispatch_lead_agent(
-                            stage=LeadAgentStage.REVISION,
+                    if choice == "c":
+                        lead_plan = await self._revise_plan(
                             raw_input=raw_input,
                             current_plan=lead_plan,
-                            completed_tasks=[],
-                            revision_reason="User requested revision.",
                         )
-                        plan = await planner.build_plan(
-                            lead_plan,
-                            session=session,
-                            available_providers=self.available_providers,
-                        )
+                        plan = await planner.build_plan(lead_plan, session=session)
                         continue
-                    # Unknown choice: loop.
 
             await self._transition(OrchestratorState.EXECUTING)
-
-            runnable = await self.db_repo.get_runnable_tasks(plan.id)
-            if not runnable:
-                raise UnknownError("No runnable tasks produced by plan", detail=plan.id.hex)
-            task = runnable[0]
-
-            assignment = await self.db_repo.get_assignment_for_task(task.id)
-            if assignment is None:
-                raise StorageError("No assignment found for planned task", detail=str(task.id))
-
-            agent = await self.db_repo.get_agent(assignment.agent_id)
-
-            await self._hitl_checkpoint_for_tasks([task])
-
-            cli_display.print_task_activity(
-                self._rich_console,
-                task_title=task.title,
-                agent_type=str(agent.type),
-                status="running",
-            )
-
-            worktree_path, branch_name = await git_ops.create_worktree(
-                self.working_directory, session.id, task.id
-            )
-            await self.db_repo.assign_worktree(task.id, worktree_path=worktree_path, branch_name=branch_name)
-
-            loaded = load_config()
-            timeout_s = float(getattr(loaded.settings, "orchestrator_timeout_seconds", 120.0))
-            response, metrics_out, trace = await dispatch_agent(
-                task=task,
-                agent=agent,
-                assignment=assignment,
-                session=session,
-                vault=self._vault,
-                db_repo=self.db_repo,
-                operation_mode=self.operation_mode,
-                timeout_seconds=timeout_s,
-            )
-            metrics = metrics_out
-
-            await self.db_repo.save_task_metrics(
-                assignment_id=assignment.id,
-                task_id=task.id,
-                session_id=session.id,
-                metrics=metrics_out,
-            )
-            await self.db_repo.save_artifacts(
-                assignment_id=assignment.id,
-                task_id=task.id,
-                session_id=session.id,
-                artifacts=response.artifacts,
-            )
-            save_trace(self.working_directory, trace, agent_id=str(agent.id))
-            await self.db_repo.complete_assignment(assignment.id)
-            await self.db_repo.complete_task(task.id, result_summary="completed")
-
-            cli_display.print_task_activity(
-                self._rich_console,
-                task_title=task.title,
-                agent_type=str(agent.type),
-                status="completed",
-            )
-
-            await self._transition(OrchestratorState.MERGING)
-
-            await git_ops.merge_worktree(
-                self.working_directory,
-                branch_name=branch_name,
-                task_title=task.title,
-            )
-            await git_ops.cleanup_worktree(
-                self.working_directory,
-                worktree_path=worktree_path,
-                branch_name=branch_name,
-            )
-            await self.db_repo.clear_worktree(task.id)
-
+            await self._execute_plan(plan)
             await self._complete_session()
 
             elapsed = perf_counter() - t0
-            tok_total = metrics.tokens.total if metrics and metrics.tokens else None
+            # Metrics aggregation is not implemented yet; keep prior behavior.
             cli_display.print_completion_summary(
                 self._rich_console,
                 task_count=1,
-                files_created=len(response.artifacts.created),
-                files_updated=len(response.artifacts.updated),
-                files_deleted=len(response.artifacts.deleted),
-                tokens_total=tok_total,
+                files_created=0,
+                files_updated=0,
+                files_deleted=0,
+                tokens_total=None,
                 elapsed_s=elapsed,
             )
             success = True
@@ -341,24 +229,31 @@ class OrchestratorCore:
             self.current_session = None
         return success
 
+    async def _create_checkpoint(self, content: CheckpointContent) -> str:
+        if self.hitl_callback is None:
+            raise UnknownError(
+                "HITL checkpoint requested but no callback is configured",
+                detail="execution_mode or hitl_callback mismatch",
+            )
+        await self._transition(OrchestratorState.AWAITING_HUMAN)
+        choice = await self.hitl_callback(content)
+        return choice
+
     async def _dispatch_lead_agent(
         self,
         *,
-        stage: LeadAgentStage,
         raw_input: str,
-        current_plan: LeadAgentResponse | None,
+        stage: str,  # "initial" | "revision"
+        current_plan: ExecutionPlanResponse | None,
         completed_tasks: list[str] | None,
         revision_reason: str | None,
-    ) -> LeadAgentResponse:
-        if self._vault is None:
-            raise InitializationError("Orchestrator runtime not initialized")
-        if self.current_session is None:
+    ) -> ExecutionPlanResponse:
+        if self._vault is None or self.current_session is None:
             raise InitializationError("Session not initialized")
 
         wd = self.working_directory
         vault_row = await self.db_repo.get_vault_by_path(wd)
         vault_id = vault_row.id if vault_row is not None else None
-
         existing_rooms: list[str] = []
         if vault_id is not None:
             try:
@@ -369,7 +264,7 @@ class OrchestratorCore:
 
         # Build memory context for lead agent.
         try:
-            current_tasks = []
+            current_tasks: list[DbTask] = []
             active_plan = await self.db_repo.get_active_plan(self.current_session.id)
             if active_plan is not None:
                 current_tasks = await self.db_repo.get_tasks_by_plan(active_plan.id)
@@ -385,72 +280,182 @@ class OrchestratorCore:
         except Exception:
             mem_ctx = None
 
-        agent_context = _to_agent_context(mem_ctx)
+        agent_context = AgentContext(
+            session_summary=str(getattr(mem_ctx, "session_summary", "") or "") if mem_ctx else "",
+            relevant_prior_work=[d.to_document().strip() for d in getattr(mem_ctx, "relevant_traces", [])] if mem_ctx else [],
+            agent_history=[d.to_document().strip() for d in getattr(mem_ctx, "agent_logs", [])] if mem_ctx else [],
+        )
+
+        from zeno.core.enums import LeadAgentStage
 
         ctx = LeadAgentContext(
             session_id=str(self.current_session.id),
             raw_input=raw_input,
             mode=self.execution_mode,
-            stage=stage,
+            stage=LeadAgentStage.INITIAL if stage == "initial" else LeadAgentStage.REVISION,
             working_directory=wd,
             existing_rooms=existing_rooms,
             agent_context=agent_context,
-            available_providers=self.available_providers,
-            current_plan=current_plan,  # type: ignore[arg-type]
+            current_plan=current_plan,
             completed_tasks=completed_tasks,
             revision_reason=revision_reason,
         )
 
-        prompt = compose_prompt(mode=self.execution_mode, stage=stage, context=ctx)
-        loaded = load_config()
-        timeout_s = float(getattr(loaded.settings, "orchestrator_timeout_seconds", 120.0))
-        lead = LeadAgentAdapter(timeout_seconds=timeout_s)
-        await lead.start(prompt)
+        if self.lead_adapter is None:
+            self.lead_adapter = LeadAgentAdapter(
+                execution_mode=self.execution_mode,
+                working_directory=self.working_directory,
+                hitl_callback=self._lead_hitl_callback if self.execution_mode == ExecutionMode.HITL else None,
+            )
 
+        await self._transition(OrchestratorState.AWAITING_LEAD)
+        if stage == "initial":
+            return await self.lead_adapter.dispatch(ctx)
+        return await self.lead_adapter.revise(ctx)
+
+    async def _lead_hitl_callback(
+        self, questions: list[ClarificationQuestion]
+    ) -> list[ClarificationAnswer]:
+        answers: list[ClarificationAnswer] = []
+        for q in questions:
+            opts = q.options or []
+            keys = ["a", "b", "c", "d"]
+            content = CheckpointContent(
+                type="unexpected",
+                title=q.question,
+                description="Choose one option.",
+                options=[
+                    CheckpointOption(key=keys[i], label=opts[i]) for i in range(min(len(opts), 4))
+                ],
+                payload={"question_id": q.id},
+            )
+            choice = await self._create_checkpoint(content)
+            idx = keys.index(choice) if choice in keys else 0
+            label = opts[idx] if idx < len(opts) else (opts[0] if opts else "")
+            answers.append(ClarificationAnswer(question_id=q.id, answer=label))
+        return answers
+
+    async def _revise_plan(
+        self,
+        *,
+        raw_input: str,
+        current_plan: ExecutionPlanResponse,
+    ) -> ExecutionPlanResponse:
+        if self.hitl_callback is None:
+            raise ValidationError("Revision requested but no HITL callback configured")
+        reason = await cli_display.print_revision_prompt(self._rich_console)
+        return await self._dispatch_lead_agent(
+            raw_input=raw_input,
+            stage="revision",
+            current_plan=current_plan,
+            completed_tasks=[],
+            revision_reason=reason,
+        )
+
+    async def _execute_plan(self, plan: DbExecutionPlan) -> None:
         while True:
-            resp = await lead.read_response()
-            if resp.type == "clarification":
-                if self.execution_mode == ExecutionMode.YOLO:
-                    await lead.terminate()
-                    raise ValidationError("Lead agent produced clarification in YOLO mode")
-                if self.hitl_callback is None:
-                    await lead.terminate()
-                    raise ValidationError("Clarification requested but no HITL callback is configured")
+            runnable = await self.db_repo.get_runnable_tasks(plan.id)
+            if not runnable:
+                pending = await self.db_repo.get_pending_tasks(plan.id)
+                if pending:
+                    raise UnknownError("Dependency deadlock: no runnable tasks but pending tasks exist")
+                return
+            for task in runnable:
+                await self._execute_task(plan=plan, task=task)
 
-                assert resp.options is not None
-                content = CheckpointContent(
-                    type="unexpected",
-                    title=resp.question or "Clarification needed",
-                    description=(resp.context or "").strip() or "Choose one option.",
-                    options=[
-                        CheckpointOption(key="a", label=resp.options.option_a.label),
-                        CheckpointOption(key="b", label=resp.options.option_b.label),
-                        CheckpointOption(key="c", label=resp.options.option_c.label),
-                    ],
-                    payload={},
-                )
-                choice = await self._create_checkpoint(content)
-                label = {
-                    "a": resp.options.option_a.label,
-                    "b": resp.options.option_b.label,
-                    "c": resp.options.option_c.label,
-                }.get(choice, resp.options.option_a.label)
-                ans = ClarificationInput(
-                    question=resp.question or "",
-                    choice=choice if choice in {"a", "b", "c"} else "a",
-                    label=label,
-                )
-                await lead.send_answers(ans)
-                continue
+    async def _execute_task(self, *, plan: DbExecutionPlan, task: DbTask) -> None:
+        assert self.current_session is not None
+        if self._vault is None or self.worker_adapter is None:
+            raise InitializationError("Runtime not initialized")
 
-            if resp.type == "terminate":
-                await lead.terminate()
-                raise LeadAgentTerminationError(resp.reason or "Lead agent terminated")
+        await self.db_repo.update_task_status(task.id, TaskStatus.running)
+        cli_display.print_task_activity(
+            self._rich_console,
+            task_title=task.title,
+            agent_type=str(getattr(task, "agent_type", "coding")),
+            status="running",
+        )
 
-            if resp.type == "execution":
-                await lead.terminate()
-                return resp
+        worktree_path, branch_name = await git_ops.create_worktree(
+            self.working_directory, self.current_session.id, task.id
+        )
+        await self.db_repo.assign_worktree(task.id, worktree_path=worktree_path, branch_name=branch_name)
 
+        # Get or create agent by type (agent_type string stored on DbAgent.type enum).
+        agent_name = f"{getattr(task, 'agent_type', 'coding')}-agent"
+        agent = await self.db_repo.get_agent_by_name(agent_name)
+        if agent is None:
+            agent = await self.db_repo.create_agent(
+                name=agent_name,
+                agent_type=AgentType.other,
+                system_prompt="(dynamic)",
+            )
+
+        assignment = await self.db_repo.create_assignment(task_id=task.id, session_id=self.current_session.id, agent_id=agent.id)
+        await self.db_repo.start_assignment(assignment.id)
+
+        completed_tasks = await self.db_repo.get_completed_tasks(plan.id)
+        mem_ctx = build_context(
+            working_directory=self.working_directory,
+            vault=self._vault,
+            task_description=task.description,
+            agent_type=str(getattr(task, "agent_type", "coding")),
+            agent_id=str(agent.id),
+            session_id=self.current_session.id,
+            current_session_tasks=completed_tasks,
+        )
+        chroma_ctx = AgentContext(
+            session_summary=str(getattr(mem_ctx, "session_summary", "") or ""),
+            relevant_prior_work=[d.to_document().strip() for d in getattr(mem_ctx, "relevant_traces", [])],
+            agent_history=[d.to_document().strip() for d in getattr(mem_ctx, "agent_logs", [])],
+        )
+
+        # Dispatch worker in the worktree.
+        self.worker_adapter.working_directory = worktree_path
+        response, metrics = await self.worker_adapter.dispatch(task=task, agent=agent, chroma_context=chroma_ctx)
+
+        await self.db_repo.save_task_metrics(
+            assignment_id=assignment.id,
+            task_id=task.id,
+            session_id=self.current_session.id,
+            metrics=metrics,
+        )
+        await self.db_repo.save_artifacts(
+            assignment_id=assignment.id,
+            task_id=task.id,
+            session_id=self.current_session.id,
+            artifacts=response.artifacts,
+        )
+
+        # Save worker trace
+        from zeno.memory.models import MemTrace
+
+        trace = MemTrace(
+            vault=self.vault_name,
+            room=str(getattr(task, "room", "default") or "default"),
+            session_id=self.current_session.id,
+            task_id=task.id,
+            agent_type=str(getattr(task, "agent_type", "coding")),
+            agent_id=str(agent.id),
+            content=response.log,
+        )
+        save_trace(self.working_directory, trace, agent_id=str(agent.id))
+
+        await self.db_repo.complete_assignment(assignment.id)
+        await self.db_repo.complete_task(task.id, response.summary)
+
+        await self._transition(OrchestratorState.MERGING)
+        await git_ops.merge_worktree(self.working_directory, branch_name=branch_name, task_title=task.title)
+        await git_ops.cleanup_worktree(self.working_directory, worktree_path=worktree_path, branch_name=branch_name)
+        await self.db_repo.clear_worktree(task.id)
+
+        cli_display.print_task_activity(
+            self._rich_console,
+            task_title=task.title,
+            agent_type=str(getattr(task, "agent_type", "coding")),
+            status="complete",
+        )
+        await self._transition(OrchestratorState.EXECUTING)
 
     async def _complete_session(self) -> None:
         assert self.current_session is not None
@@ -488,32 +493,3 @@ class OrchestratorCore:
             self.current_session = None
 
         await dispose_db_engine()
-
-
-def _to_agent_context(mem_ctx) -> AgentContext:
-    if mem_ctx is None:
-        return AgentContext(session_summary="", relevant_prior_work=[], agent_history=[])
-
-    relevant: list[str] = []
-    try:
-        for d in getattr(mem_ctx, "relevant_traces", []) or []:
-            txt = d.to_document().strip()
-            if txt:
-                relevant.append(txt)
-    except Exception:
-        relevant = []
-
-    history: list[str] = []
-    try:
-        for d in getattr(mem_ctx, "agent_logs", []) or []:
-            txt = d.to_document().strip()
-            if txt:
-                history.append(txt)
-    except Exception:
-        history = []
-
-    return AgentContext(
-        session_summary=str(getattr(mem_ctx, "session_summary", "") or ""),
-        relevant_prior_work=relevant,
-        agent_history=history,
-    )

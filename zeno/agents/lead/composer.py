@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from zeno.agents.lead.adapter import LeadAgentContext
 from zeno.agents.lead.renderer import render_stage_context
 from zeno.core.enums import ExecutionMode, LeadAgentStage
+
 
 PACKAGE_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts" / "layers"
 
@@ -16,21 +16,25 @@ def _load_layer(layer_name: str) -> str:
     return (PACKAGE_PROMPTS_DIR / layer_name).read_text(encoding="utf-8")
 
 
-def _render_agent_context_block(context: LeadAgentContext) -> str:
-    ctx = context.agent_context
+def _render_agent_context_block(context) -> str:
+    ctx = getattr(context, "agent_context", None)
     parts: list[str] = []
     parts.append("=== AGENT CONTEXT ===")
     parts.append("")
     parts.append("Session summary:")
-    parts.append(ctx.session_summary.strip() if ctx.session_summary else "(none)")
+    if ctx is None:
+        parts.append("(none)")
+        return "\n".join(parts).strip() + "\n"
 
-    relevant = "\n\n".join([b.strip() for b in ctx.relevant_prior_work if b.strip()]).strip()
+    parts.append(ctx.session_summary.strip() if getattr(ctx, "session_summary", "") else "(none)")
+
+    relevant = "\n\n".join([b.strip() for b in (ctx.relevant_prior_work or []) if b.strip()]).strip()
     if relevant:
         parts.append("")
         parts.append("Relevant prior work:")
         parts.append(relevant)
 
-    history = "\n\n".join([b.strip() for b in ctx.agent_history if b.strip()]).strip()
+    history = "\n\n".join([b.strip() for b in (ctx.agent_history or []) if b.strip()]).strip()
     if history:
         parts.append("")
         parts.append("Agent history:")
@@ -39,7 +43,7 @@ def _render_agent_context_block(context: LeadAgentContext) -> str:
     return "\n".join(parts).strip() + "\n"
 
 
-def compose_prompt(mode: ExecutionMode, stage: LeadAgentStage, context: LeadAgentContext) -> str:
+def compose_prompt(mode: ExecutionMode, stage: LeadAgentStage, context) -> str:
     layer_files: list[str] = [
         "identity.md",
         "response_format.md",
