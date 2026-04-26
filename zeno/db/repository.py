@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import logging
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -34,6 +35,8 @@ from zeno.db.models import (
 )
 from zeno.core.enums import ExecutionMode, OrchestratorState
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
@@ -59,6 +62,7 @@ async def _next_plan_revision(db: AsyncSession, session_id: uuid.UUID) -> int:
 async def create_session(
     mode: ExecutionMode, working_directory: str, raw_input: str, *, id: uuid.UUID | None = None
 ) -> DbSession:
+    logger.debug("create_session | mode=%s wd=%s", mode.value, working_directory)
     factory = get_session_factory()
     async with factory() as db:
         s = DbSession(
@@ -85,6 +89,7 @@ async def get_session(session_id: uuid.UUID) -> DbSession | None:
 
 
 async def update_session_status(session_id: uuid.UUID, status: SessionStatus) -> None:
+    logger.debug("update_session_status | session_id=%s status=%s", session_id, status.value)
     factory = get_session_factory()
     async with factory() as db:
         s = await db.get(DbSession, session_id)
@@ -96,6 +101,7 @@ async def update_session_status(session_id: uuid.UUID, status: SessionStatus) ->
 
 
 async def update_session_lead_session_id(session_id: uuid.UUID, lead_session_id: str) -> None:
+    logger.debug("update_session_lead_session_id | session_id=%s lead_session_id=%s", session_id, lead_session_id)
     factory = get_session_factory()
     async with factory() as db:
         s = await db.get(DbSession, session_id)
@@ -106,7 +112,25 @@ async def update_session_lead_session_id(session_id: uuid.UUID, lead_session_id:
         await db.commit()
 
 
+async def get_latest_lead_session_id_for_vault(vault_path: str) -> str | None:
+    """
+    Return the most recent non-null lead agent SDK session id for a vault path.
+
+    This enables resuming a single lead-agent conversation across CLI invocations.
+    """
+    factory = get_session_factory()
+    async with factory() as db:
+        res = await db.execute(
+            select(DbSession.lead_session_id)
+            .where(DbSession.working_directory == vault_path, DbSession.lead_session_id.is_not(None))
+            .order_by(DbSession.created_at.desc())
+            .limit(1)
+        )
+        return res.scalar_one_or_none()
+
+
 async def update_orchestrator_state(session_id: uuid.UUID, state: OrchestratorState) -> None:
+    logger.debug("update_orchestrator_state | session_id=%s state=%s", session_id, state.value)
     factory = get_session_factory()
     async with factory() as db:
         s = await db.get(DbSession, session_id)
@@ -132,6 +156,7 @@ async def get_orchestrator_state(session_id: uuid.UUID) -> OrchestratorState:
 
 
 async def create_execution_plan(session_id: uuid.UUID) -> DbExecutionPlan:
+    logger.debug("create_execution_plan | session_id=%s", session_id)
     factory = get_session_factory()
     async with factory() as db:
         s = await db.get(DbSession, session_id)
@@ -227,6 +252,7 @@ async def get_vault(vault_id: uuid.UUID) -> DbVault | None:
 async def create_room(
     vault_id: uuid.UUID, name: str, description: str, *, id: uuid.UUID | None = None
 ) -> DbRoom:
+    logger.debug("create_room | vault_id=%s name=%s", vault_id, name)
     factory = get_session_factory()
     async with factory() as db:
         r = DbRoom(
@@ -280,6 +306,7 @@ async def create_task(
     parallel_group: str | None = None,
     checkpoint_before: bool = False,
 ) -> DbTask:
+    logger.debug("create_task | session_id=%s title=%s type=%s", session_id, title, task_type.value)
     factory = get_session_factory()
     async with factory() as db:
         t = DbTask(
@@ -334,6 +361,7 @@ async def get_completed_tasks(plan_id: uuid.UUID) -> list[DbTask]:
 
 
 async def update_task_status(task_id: uuid.UUID, status: TaskStatus) -> None:
+    logger.debug("update_task_status | task_id=%s status=%s", task_id, status.value)
     factory = get_session_factory()
     async with factory() as db:
         t = await db.get(DbTask, task_id)
@@ -373,6 +401,7 @@ async def get_runnable_tasks(plan_id: uuid.UUID) -> list[DbTask]:
             if all(status_by.get(d) == TaskStatus.completed for d in dep_ids):
                 out.append(t)
         out.sort(key=lambda x: (x.priority, x.created_at))
+        logger.debug("get_runnable_tasks | plan_id=%s count=%d", plan_id, len(out))
         return out
 
 
@@ -565,6 +594,12 @@ async def save_task_metrics(
     session_id: uuid.UUID,
     metrics: WorkerMetrics,
 ) -> DbTaskMetrics:
+    logger.debug(
+        "save_task_metrics | task_id=%s tokens=%s cost=%s",
+        task_id,
+        metrics.total_tokens,
+        metrics.cost_usd,
+    )
     factory = get_session_factory()
     async with factory() as db:
         m = DbTaskMetrics(

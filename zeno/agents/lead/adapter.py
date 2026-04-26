@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import os
 import json
+import logging
 import traceback
 from typing import Any
 
@@ -21,6 +22,8 @@ from zeno.agents.models import (
 )
 from zeno.core.enums import ExecutionMode, LeadAgentStage
 from zeno.orchestrator.errors import LeadAgentTerminationError, ParseError, ValidationError
+
+logger = logging.getLogger(__name__)
 
 _SDK_IMPORT_ERROR: str | None = None
 
@@ -87,7 +90,7 @@ class LeadAgentAdapter:
         return self._session_id
 
     async def dispatch(self, context: LeadAgentContext) -> ExecutionPlanResponse:
-        return await self._run(context=context, resume_session_id=None)
+        return await self._run(context=context, resume_session_id=self._session_id)
 
     async def revise(self, context: LeadAgentContext) -> ExecutionPlanResponse:
         if not self._session_id:
@@ -104,10 +107,29 @@ class LeadAgentAdapter:
                 ).strip(),
             )
 
-        system_prompt = compose_prompt(
-            mode=self.execution_mode,
-            stage=context.stage,
-            context=context,
+        send_prompt_on_resume = os.getenv("ZENO_LEAD_RESUME_SEND_PROMPT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        system_prompt = None
+        if resume_session_id is None or send_prompt_on_resume:
+            system_prompt = compose_prompt(
+                mode=self.execution_mode,
+                stage=context.stage,
+                context=context,
+            )
+        logger.info(
+            "Lead agent dispatch started | mode=%s stage=%s",
+            self.execution_mode.value,
+            context.stage.value,
+        )
+        logger.debug(
+            "Lead agent resume | resume_session_id=%s send_prompt=%s prompt_chars=%s",
+            resume_session_id,
+            bool(system_prompt),
+            len(system_prompt) if system_prompt else 0,
         )
 
         options = ClaudeAgentOptions(
@@ -135,6 +157,7 @@ class LeadAgentAdapter:
             while True:
                 async for msg in client.receive_response():
                     if AssistantMessage is not None and isinstance(msg, AssistantMessage):
+                        logger.debug("Lead SDK message | type=%s", type(msg).__name__)
                         ask = self._extract_ask_user_question(msg)
                         if ask is None:
                             continue
@@ -144,6 +167,7 @@ class LeadAgentAdapter:
                             raise ValidationError(
                                 "AskUserQuestion requested but no hitl_callback configured"
                             )
+                        logger.info("AskUserQuestion fired | questions=%d", len(ask.questions))
                         await self._answer_questions(client, ask)
                         # Start a fresh receive_response() for the follow-up query.
                         break
@@ -154,6 +178,7 @@ class LeadAgentAdapter:
 
                     if ResultMessage is not None and isinstance(msg, ResultMessage):
                         self._session_id = getattr(msg, "session_id", None) or self._session_id
+                        logger.info("Lead session captured | session_id=%s", self._session_id)
                         output = getattr(msg, "structured_output", None)
                         if output is None:
                             # SDKs may use different attribute names depending on version.
@@ -237,14 +262,18 @@ class LeadAgentAdapter:
         otype = output.get("type")
         if otype == "terminate":
             term = TerminateResponse(**output)
+            logger.error("Lead agent terminated | reason=%s", term.reason)
             raise LeadAgentTerminationError(term.reason)
 
         if otype == "execution_plan":
             plan = ExecutionPlanResponse(**output)
             errors = validate_lead_response(plan)
             if errors:
+                logger.error("Lead plan validation failed | errors=%s", "; ".join(errors))
                 raise ValidationError("Invalid execution plan response", detail="; ".join(errors))
+            logger.info("Lead agent plan received | tasks=%d", len(plan.tasks))
             return plan
 
+        logger.error("Lead parse error | unknown_type=%s", str(otype))
         raise ParseError("Unknown structured_output type", detail=str(otype))
 

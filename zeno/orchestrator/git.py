@@ -15,6 +15,7 @@ async def _run_git(
     *,
     cwd: str,
 ) -> tuple[int, str, str]:
+    logger.debug("Git cmd | cwd=%s args=%s", cwd, args)
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -37,6 +38,7 @@ async def ensure_git_initialized(working_directory: str) -> None:
     if git_dir.exists():
         return
 
+    logger.debug("Git init | path=%s", working_directory)
     rc, out, err = await _run_git(["init"], cwd=str(Path(working_directory).resolve()))
     if rc != 0:
         raise InitializationError(
@@ -57,8 +59,9 @@ async def ensure_initial_commit(working_directory: str) -> None:
     if rc == 0:
         return
 
+    logger.debug("Initial commit needed | path=%s", root)
     rc2, out2, err2 = await _run_git(
-        ["commit", "--allow-empty", "-m", "chore: initial commit"],
+        ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "chore: initial zeno commit"],
         cwd=root,
     )
     if rc2 != 0:
@@ -66,6 +69,7 @@ async def ensure_initial_commit(working_directory: str) -> None:
             "Failed to create initial git commit",
             detail=(out2 + "\n" + err2).strip(),
         )
+    logger.info("Initial commit created | path=%s", root)
 
 
 async def create_worktree(
@@ -79,6 +83,7 @@ async def create_worktree(
 
     branch_name = f"zeno/{session_id}/{task_id}"
 
+    logger.debug("Worktree create | path=%s branch=%s", str(worktree_path), branch_name)
     rc, out, err = await _run_git(
         ["worktree", "add", "-b", branch_name, str(worktree_path)],
         cwd=str(root),
@@ -100,8 +105,9 @@ async def merge_worktree(
     root = Path(working_directory).resolve()
     msg = f"zeno: {task_title}".strip()
 
+    logger.info("Merge | branch=%s msg=%s", branch_name, msg)
     rc, out, err = await _run_git(
-        ["merge", "--no-ff", branch_name, "-m", msg],
+        ["-c", "commit.gpgsign=false", "merge", "--no-ff", branch_name, "-m", msg],
         cwd=str(root),
     )
     if rc != 0:
@@ -109,6 +115,7 @@ async def merge_worktree(
             f"Failed to merge worktree branch for task: {task_title}",
             detail=(out + "\n" + err).strip(),
         )
+    logger.info("Merge complete | branch=%s", branch_name)
 
 
 async def cleanup_worktree(
@@ -128,6 +135,7 @@ async def cleanup_worktree(
     rc2, out2, err2 = await _run_git(["branch", "-D", branch_name], cwd=str(root))
     if rc2 != 0:
         logger.warning("branch delete failed: %s", (out2 + "\n" + err2).strip())
+    logger.debug("Worktree cleanup | path=%s branch=%s", worktree_path, branch_name)
 
 
 async def commit_worktree_changes(worktree_path: str, task_title: str) -> None:
@@ -141,8 +149,10 @@ async def commit_worktree_changes(worktree_path: str, task_title: str) -> None:
             detail=(out + "\n" + err).strip(),
         )
     if not out.strip():
+        logger.warning("Nothing to commit | path=%s", root)
         return
 
+    logger.debug("Staging changes | path=%s files=%s", root, out.strip())
     rc2, out2, err2 = await _run_git(["add", "-A"], cwd=root)
     if rc2 != 0:
         raise InitializationError(
@@ -151,10 +161,11 @@ async def commit_worktree_changes(worktree_path: str, task_title: str) -> None:
         )
 
     msg = f"feat: {task_title}".strip()
-    rc3, out3, err3 = await _run_git(["commit", "-m", msg], cwd=root)
+    rc3, out3, err3 = await _run_git(["-c", "commit.gpgsign=false", "commit", "-m", msg], cwd=root)
     if rc3 != 0:
         raise InitializationError(
             "Failed to commit worktree changes",
             detail=(out3 + "\n" + err3).strip(),
         )
+    logger.info("Committed | path=%s message=%s", root, msg)
 
