@@ -21,7 +21,7 @@ def _render_initial_context(context) -> str:
     prior_blocks = ""
     if agent_ctx is not None:
         prior_blocks = "\n\n".join(
-            [b.strip() for b in (getattr(agent_ctx, "relevant_prior_work", None) or []) if b.strip()]
+            [b.strip() for b in (getattr(agent_ctx, "relevant_traces", None) or []) if b.strip()]
         )
     if not prior_blocks.strip():
         prior_blocks = "(no prior work)"
@@ -29,7 +29,7 @@ def _render_initial_context(context) -> str:
     history_blocks = ""
     if agent_ctx is not None:
         history_blocks = "\n\n".join(
-            [b.strip() for b in (getattr(agent_ctx, "agent_history", None) or []) if b.strip()]
+            [b.strip() for b in (getattr(agent_ctx, "agent_logs", None) or []) if b.strip()]
         )
     if not history_blocks.strip():
         history_blocks = "No prior lead agent history"
@@ -84,7 +84,7 @@ def _render_revision_context(context) -> str:
     prior_blocks = ""
     if agent_ctx is not None:
         prior_blocks = "\n\n".join(
-            [b.strip() for b in (getattr(agent_ctx, "relevant_prior_work", None) or []) if b.strip()]
+            [b.strip() for b in (getattr(agent_ctx, "relevant_traces", None) or []) if b.strip()]
         )
     if not prior_blocks.strip():
         prior_blocks = "(no prior work)"

@@ -45,6 +45,29 @@ async def ensure_git_initialized(working_directory: str) -> None:
         )
 
 
+async def ensure_initial_commit(working_directory: str) -> None:
+    """
+    Create an empty initial commit if the repo has no commits yet.
+
+    This prevents `git worktree add -b ...` and later merges from failing when the
+    target branch has no history (e.g. freshly `git init`'d repos).
+    """
+    root = str(Path(working_directory).resolve())
+    rc, _out, _err = await _run_git(["rev-parse", "HEAD"], cwd=root)
+    if rc == 0:
+        return
+
+    rc2, out2, err2 = await _run_git(
+        ["commit", "--allow-empty", "-m", "chore: initial commit"],
+        cwd=root,
+    )
+    if rc2 != 0:
+        raise InitializationError(
+            "Failed to create initial git commit",
+            detail=(out2 + "\n" + err2).strip(),
+        )
+
+
 async def create_worktree(
     working_directory: str,
     session_id: UUID,

@@ -112,7 +112,51 @@ class ExecutionPlanResponse(BaseModel):
 
 WORKER_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "json_schema",
-    "schema": WorkerResponse.model_json_schema(),
+    "schema": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["success", "terminate"]}
+        },
+        "required": ["type"],
+        "if": {
+            "properties": {"type": {"const": "success"}},
+        },
+        "then": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "summary": {"type": "string"},
+                "artifacts": {
+                    "type": "object",
+                    "properties": {
+                        "created": {"type": "array", "items": {"type": "string"}},
+                        "updated": {"type": "array", "items": {"type": "string"}},
+                        "deleted": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["created", "updated", "deleted"],
+                },
+                "log": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "decisions": {"type": "string"},
+                        "assumptions": {"type": "string"},
+                        "open_issues": {"type": "string"}
+                    },
+                    "required": ["summary", "decisions", "assumptions", "open_issues"],
+                }
+            },
+            "required": ["type", "summary", "artifacts", "log"],
+        },
+        "else": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "reason": {"type": "string"}
+            },
+            "required": ["type", "reason"],
+        }
+    }
 }
 
 
@@ -208,8 +252,8 @@ class ClarificationAnswer(BaseModel):
 
 class AgentContext(BaseModel):
     session_summary: str
-    relevant_prior_work: list[str] = Field(default_factory=list)
-    agent_history: list[str] = Field(default_factory=list)
+    relevant_traces: list[str] = Field(default_factory=list)
+    agent_logs: list[str] = Field(default_factory=list)
 
 
 LeadRequestType = Literal[

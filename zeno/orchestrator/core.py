@@ -23,7 +23,7 @@ from zeno.cli import display as cli_display
 from zeno.core.enums import ExecutionMode, OrchestratorState
 from zeno.db import repository as db_repository
 from zeno.db.engine import dispose_db_engine
-from zeno.db.models import DbExecutionPlan, DbSession, DbTask, SessionStatus, TaskStatus
+from zeno.db.models import AgentType, DbExecutionPlan, DbSession, DbTask, SessionStatus, TaskStatus
 from zeno.memory.models import MemVault
 from zeno.memory.mind import initialize_vault as initialize_mem_vault
 from zeno.memory.retrieval import build_context
@@ -64,6 +64,47 @@ class _StateMachine:
             }
         )
 
+    @classmethod
+    def default(cls) -> "_StateMachine":
+        return cls(
+            allowed={
+                OrchestratorState.INITIALIZING: {
+                    OrchestratorState.AWAITING_LEAD,
+                    OrchestratorState.FAILED,
+                },
+                OrchestratorState.AWAITING_LEAD: {
+                    OrchestratorState.AWAITING_HUMAN,
+                    OrchestratorState.PLANNING,
+                    OrchestratorState.FAILED,
+                },
+                OrchestratorState.AWAITING_HUMAN: {
+                    OrchestratorState.AWAITING_LEAD,
+                    OrchestratorState.PLANNING,
+                    OrchestratorState.EXECUTING,
+                    OrchestratorState.ABORTED,
+                    OrchestratorState.FAILED,
+                },
+                OrchestratorState.PLANNING: {
+                    OrchestratorState.EXECUTING,
+                    OrchestratorState.FAILED,
+                },
+                OrchestratorState.EXECUTING: {
+                    OrchestratorState.AWAITING_LEAD,
+                    OrchestratorState.MERGING,
+                    OrchestratorState.COMPLETED,
+                    OrchestratorState.FAILED,
+                },
+                OrchestratorState.MERGING: {
+                    OrchestratorState.EXECUTING,
+                    OrchestratorState.COMPLETED,
+                    OrchestratorState.FAILED,
+                },
+                OrchestratorState.COMPLETED: set(),
+                OrchestratorState.FAILED: set(),
+                OrchestratorState.ABORTED: set(),
+            }
+        )
+
     def can_transition(self, old: OrchestratorState, new: OrchestratorState) -> bool:
         return new in self.allowed.get(old, set())
 
@@ -88,7 +129,7 @@ class OrchestratorCore:
         self.worker_adapter: WorkerAdapter | None = None
 
         self.db_repo = db_repository
-        self._sm = _StateMachine.phase6()
+        self._sm = _StateMachine.default()
         self._rich_console = Console()
 
     async def initialize_runtime(self) -> None:
@@ -282,8 +323,8 @@ class OrchestratorCore:
 
         agent_context = AgentContext(
             session_summary=str(getattr(mem_ctx, "session_summary", "") or "") if mem_ctx else "",
-            relevant_prior_work=[d.to_document().strip() for d in getattr(mem_ctx, "relevant_traces", [])] if mem_ctx else [],
-            agent_history=[d.to_document().strip() for d in getattr(mem_ctx, "agent_logs", [])] if mem_ctx else [],
+            relevant_traces=[d.to_document().strip() for d in getattr(mem_ctx, "relevant_traces", [])] if mem_ctx else [],
+            agent_logs=[d.to_document().strip() for d in getattr(mem_ctx, "agent_logs", [])] if mem_ctx else [],
         )
 
         from zeno.core.enums import LeadAgentStage
@@ -406,8 +447,8 @@ class OrchestratorCore:
         )
         chroma_ctx = AgentContext(
             session_summary=str(getattr(mem_ctx, "session_summary", "") or ""),
-            relevant_prior_work=[d.to_document().strip() for d in getattr(mem_ctx, "relevant_traces", [])],
-            agent_history=[d.to_document().strip() for d in getattr(mem_ctx, "agent_logs", [])],
+            relevant_traces=[d.to_document().strip() for d in getattr(mem_ctx, "relevant_traces", [])],
+            agent_logs=[d.to_document().strip() for d in getattr(mem_ctx, "agent_logs", [])],
         )
 
         # Dispatch worker in the worktree.

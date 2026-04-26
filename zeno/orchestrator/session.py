@@ -8,7 +8,7 @@ from zeno.db.engine import create_all_tables
 from zeno.db.models import DbSession, SessionStatus
 from zeno.memory import mind
 from zeno.orchestrator.errors import InitializationError, StorageError
-from zeno.orchestrator.git import ensure_git_initialized
+from zeno.orchestrator.git import ensure_git_initialized, ensure_initial_commit
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ async def prepare_workspace(working_directory: str, *, db_repo) -> tuple[str, st
         ) from e
 
     await ensure_git_initialized(wd)
+    await ensure_initial_commit(wd)
 
     try:
         # Ensure SQLite schema exists before mind init touches vault/room tables.
