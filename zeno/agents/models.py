@@ -35,6 +35,17 @@ class AgentResponse(BaseModel):
     log: MemLog
 
 
+class WorkerResponse(BaseModel):
+    summary: str
+    artifacts: AgentArtifacts = Field(default_factory=AgentArtifacts)
+    log: MemLog
+
+
+class TerminateResponse(BaseModel):
+    type: Literal["terminate"] = "terminate"
+    reason: str
+
+
 # ---------------------------------------------------------------------------
 # Phase 5: Lead agent response/request contracts
 # ---------------------------------------------------------------------------
@@ -45,12 +56,6 @@ class ClarificationQuestion(BaseModel):
     question: str
     options: list[str] | None = None
     required: bool = True
-
-
-class ClarificationResponse(BaseModel):
-    type: Literal["clarification"] = "clarification"
-    questions: list[ClarificationQuestion] = Field(default_factory=list)
-    context: str
 
 
 class RoomDefinition(BaseModel):
@@ -68,7 +73,6 @@ class TaskDefinition(BaseModel):
     description: str
     type: TaskTypeLiteral
     agent_type: LeadAgentTypeLiteral
-    provider: str
     room: str
     agent_responsibilities: str | None = None
     depends_on: list[str] = Field(default_factory=list)
@@ -83,25 +87,6 @@ class ExecutionPlanResponse(BaseModel):
     tasks: list[TaskDefinition] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     log: MemLog
-
-
-class LeadAgentResponse(BaseModel):
-    type: Literal["execution", "clarification", "terminate"]
-
-    # clarification
-    question: str | None = None
-    context: str | None = None
-    options: list[str] | None = None
-
-    # execution
-    task_summary: str | None = None
-    rooms: list[RoomDefinition] | None = None
-    tasks: list[TaskDefinition] | None = None
-    assumptions: list[str] | None = None
-    log: MemLog | None = None
-
-    # terminate
-    reason: str | None = None
 
 
 class ClarificationInput(BaseModel):
@@ -156,47 +141,24 @@ class CheckpointContent(BaseModel):
 
 
 def validate_lead_response(
-    response: LeadAgentResponse,
-    available_providers: list[str] | None = None,
+    response: ExecutionPlanResponse,
 ) -> list[str]:
     errors: list[str] = []
-    rtype = response.type
-
-    if rtype not in {"execution", "clarification", "terminate"}:
-        errors.append('type must be exactly "execution" | "clarification" | "terminate"')
+    if response.type != "execution_plan":
+        errors.append('type must be exactly "execution_plan"')
         return errors
 
-    if rtype == "clarification":
-        if not (response.question and response.question.strip()):
-            errors.append("question must be non-empty for type=clarification")
-        return errors
-
-    if rtype == "terminate":
-        if not (response.reason and response.reason.strip()):
-            errors.append("reason must be non-empty string for type=terminate")
-        return errors
-
-    # execution rules
     if not response.tasks:
-        errors.append("tasks must be non-empty list for type=execution")
+        errors.append("tasks must be non-empty list for type=execution_plan")
         return errors
     if not response.rooms:
-        errors.append("rooms must be non-empty list for type=execution")
+        errors.append("rooms must be non-empty list for type=execution_plan")
         return errors
-    if response.log is None:
-        errors.append("log must be present for type=execution")
 
     room_names = {r.name for r in response.rooms}
     task_ids = {t.id for t in response.tasks}
 
     for t in response.tasks:
-        if not (t.provider and t.provider.strip()):
-            errors.append(f"task {t.id}: provider must be present for type=execution")
-        elif available_providers is not None and t.provider not in set(available_providers):
-            errors.append(
-                f"task {t.id}: provider {t.provider!r} is not in available_providers"
-            )
-
         if t.parallel_group is not None:
             pg = t.parallel_group
             if not (len(pg) == 1 and "A" <= pg <= "Z"):
