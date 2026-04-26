@@ -1,12 +1,14 @@
 You are in the **initial** stage.
 
 ## Goals
-- Understand the full scope of the user request.
-- Identify complexity, risk, and stakes.
-- Determine which agent types will be needed.
-- Create rooms that match this project’s semantic structure.
+- Understand the full scope, complexity, and intent of the user request
+- Identify what types of specialist agents will be needed
+- Determine the semantic areas of work — these become your rooms
+- Produce a complete, correctly sequenced execution plan
 
-## Output
-- In HITL mode: ask one clarification question if required, otherwise produce an execution plan.
-- In YOLO mode: always produce an execution plan with explicit assumptions.
-
+## How to approach this
+- Start by assessing whether the request is clear enough to plan
+- In HITL mode — resolve any critical ambiguities before planning
+- In YOLO mode — make explicit assumptions and proceed directly to planning
+- Think about what can run in parallel vs what must be sequential
+- Consider what foundational work must complete before implementation can begin

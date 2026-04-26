@@ -6,67 +6,62 @@ from zeno.agents.models import AgentContext
 def build_system_prompt(
     *, agent_type: str, agent_responsibilities: str | None, chroma_context: AgentContext
 ) -> str:
-    # 1) Role definition
     parts: list[str] = []
+
+    # 1) Role definition
     parts.append(
-        f"You are a {agent_type} agent working as part of a multi-agent\n"
-        "system called Zeno."
+        f"You are a {agent_type} specialist agent working as part of Zeno, "
+        "a multi-agent orchestration system.\n"
+        "You will be given a specific task to complete. "
+        "Other specialist agents handle the rest of the system — "
+        "focus entirely on your assigned task."
     )
 
     # 2) Responsibilities
     resp = (agent_responsibilities or "").strip() or "(none provided)"
-    parts.append("Your specific responsibilities for this task:")
+    parts.append("## Your responsibilities for this task")
     parts.append(resp)
 
     # 3) Project context (from ChromaDB)
-    parts.append("=== PROJECT CONTEXT ===")
-    parts.append((chroma_context.session_summary or "").strip() or "(no session summary)")
-    parts.append("")
+    parts.append("## Project context")
+    summary = (chroma_context.session_summary or "").strip()
+    parts.append(summary if summary else "(no session summary)")
 
-    parts.append("RELEVANT PRIOR WORK:")
-    relevant = [t.strip() for t in (chroma_context.relevant_prior_work or []) if t.strip()]
+    relevant = [t.strip() for t in (chroma_context.relevant_traces or []) if t.strip()]
     if relevant:
+        parts.append("\n### Relevant prior work")
         for i, txt in enumerate(relevant, start=1):
-            parts.append(f"- Trace {i}:\n{txt}")
-    else:
-        parts.append("(none)")
-    parts.append("")
+            parts.append(f"**Trace {i}:**\n{txt}")
 
-    parts.append("AGENT HISTORY:")
-    history = [t.strip() for t in (chroma_context.agent_history or []) if t.strip()]
+    history = [t.strip() for t in (chroma_context.agent_logs or []) if t.strip()]
     if history:
+        parts.append("\n### Your prior history on this project")
         for i, txt in enumerate(history, start=1):
-            parts.append(f"- Entry {i}:\n{txt}")
-    else:
-        parts.append("No prior history for this agent type in this project")
+            parts.append(f"**Entry {i}:**\n{txt}")
 
     # 4) Behavioral rules
-    parts.append("")
-    parts.append("Rules you must follow:")
-    parts.append("- Complete your task fully before responding")
+    parts.append("## Rules")
     parts.append(
-        "- Be exhaustive when reporting artifacts — include every file\n"
-        "  you created, updated, or deleted including files modified\n"
-        "  via bash commands"
+        "- Complete your task fully before reporting back\n"
+        "- Work only within your assigned scope — do not touch unrelated files\n"
+        "- Assume no context beyond what is provided above\n"
+        "- If you encounter a blocker, document it clearly in your log"
     )
+
+    # 5) Reporting guidance
+    parts.append("## When you finish")
     parts.append(
-        "- Write your log entry as a detailed briefing for the next\n"
-        "  agent that will work on this project"
+        "Report back with one of two response types:\n\n"
+        "If you completed the task successfully:\n"
+        "- type: success\n"
+        "- A clear summary of what you did and why\n"
+        "- Every file you created, updated, or deleted\n"
+        "- A detailed log entry for the next agent\n\n"
+        "If you cannot complete the task — file not found, "
+        "blocker encountered, task is impossible:\n"
+        "- type: terminate\n"
+        "- A clear reason explaining what went wrong and why\n"
+        "  you could not complete the task"
     )
-    parts.append("- Assume no prior context beyond what is provided above")
 
-    # 5) Response format rules
-    parts.append("")
-    parts.append("When your task is complete, use the StructuredOutput tool")
-    parts.append("with this exact structure:")
-    parts.append("- summary: what you did and why")
-    parts.append("- artifacts.created: list of absolute file paths created")
-    parts.append("- artifacts.updated: list of absolute file paths modified")
-    parts.append("- artifacts.deleted: list of absolute file paths deleted")
-    parts.append("- log.summary: detailed summary for future agents")
-    parts.append("- log.decisions: key decisions made and reasoning")
-    parts.append("- log.assumptions: anything assumed not explicitly specified")
-    parts.append("- log.open_issues: unresolved things future agents should know")
-
-    return "\n".join(parts).strip() + "\n"
-
+    return "\n\n".join(parts).strip() + "\n"

@@ -37,9 +37,15 @@ class AgentResponse(BaseModel):
 
 
 class WorkerResponse(BaseModel):
+    type: Literal["success"] = "success"
     summary: str
     artifacts: AgentArtifacts = Field(default_factory=AgentArtifacts)
     log: MemLog
+
+
+class WorkerTerminateResponse(BaseModel):
+    type: Literal["terminate"] = "terminate"
+    reason: str
 
 
 class WorkerMetrics(BaseModel):
@@ -112,13 +118,131 @@ class ExecutionPlanResponse(BaseModel):
 
 WORKER_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "json_schema",
-    "schema": WorkerResponse.model_json_schema(),
+    "schema": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["success", "terminate"]}
+        },
+        "required": ["type"],
+        "if": {
+            "properties": {"type": {"const": "success"}},
+        },
+        "then": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "summary": {"type": "string"},
+                "artifacts": {
+                    "type": "object",
+                    "properties": {
+                        "created": {"type": "array", "items": {"type": "string"}},
+                        "updated": {"type": "array", "items": {"type": "string"}},
+                        "deleted": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["created", "updated", "deleted"],
+                },
+                "log": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "decisions": {"type": "array", "items": {"type": "string"}},
+                        "assumptions": {"type": "array", "items": {"type": "string"}},
+                        "dependencies": {"type": "array", "items": {"type": "string"}},
+                        "open_issues": {"type": "array", "items": {"type": "string"}},
+                        "room": {"type": "string"},
+                    },
+                    "required": ["summary", "decisions", "assumptions", "open_issues", "room"]
+                }
+            },
+            "required": ["type", "summary", "artifacts", "log"],
+        },
+        "else": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "reason": {"type": "string"}
+            },
+            "required": ["type", "reason"],
+        }
+    }
 }
 
 
-EXECUTION_PLAN_SCHEMA: dict[str, Any] = {
+LEAD_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "json_schema",
-    "schema": ExecutionPlanResponse.model_json_schema(),
+    "schema": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": ["execution_plan", "terminate"]
+            }
+        },
+        "required": ["type"],
+        "if": {
+            "properties": {"type": {"const": "execution_plan"}}
+        },
+        "then": {
+            "properties": {
+                "type": {"type": "string"},
+                "task_summary": {"type": "string"},
+                "rooms": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"}
+                        },
+                        "required": ["name", "description"]
+                    }
+                },
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "type": {"type": "string"},
+                            "agent_type": {"type": "string"},
+                            "agent_responsibilities": {"type": "string"},
+                            "room": {"type": "string"},
+                            "depends_on": {"type": "array", "items": {"type": "string"}},
+                            "parallel_group": {"type": ["string", "null"]},
+                            "checkpoint_before": {"type": "boolean"}
+                        },
+                        "required": ["id", "title", "description", "type",
+                                     "agent_type", "agent_responsibilities",
+                                     "room", "depends_on", "parallel_group",
+                                     "checkpoint_before"]
+                    }
+                },
+                "assumptions": {"type": "array", "items": {"type": "string"}},
+                "log": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "decisions": {"type": "array", "items": {"type": "string"}},
+                        "assumptions": {"type": "array", "items": {"type": "string"}},
+                        "dependencies": {"type": "array", "items": {"type": "string"}},
+                        "open_issues": {"type": "array", "items": {"type": "string"}},
+                        "room": {"type": "string"},
+                    },
+                    "required": ["summary", "decisions", "assumptions", "open_issues", "room"]
+                }
+            },
+            "required": ["type", "task_summary", "rooms", "tasks", "assumptions", "log"]
+        },
+        "else": {
+            "properties": {
+                "type": {"type": "string"},
+                "reason": {"type": "string"}
+            },
+            "required": ["type", "reason"]
+        }
+    }
 }
 
 
@@ -136,8 +260,8 @@ class ClarificationAnswer(BaseModel):
 
 class AgentContext(BaseModel):
     session_summary: str
-    relevant_prior_work: list[str] = Field(default_factory=list)
-    agent_history: list[str] = Field(default_factory=list)
+    relevant_traces: list[str] = Field(default_factory=list)
+    agent_logs: list[str] = Field(default_factory=list)
 
 
 LeadRequestType = Literal[

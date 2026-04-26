@@ -28,13 +28,13 @@ def _render_agent_context_block(context) -> str:
 
     parts.append(ctx.session_summary.strip() if getattr(ctx, "session_summary", "") else "(none)")
 
-    relevant = "\n\n".join([b.strip() for b in (ctx.relevant_prior_work or []) if b.strip()]).strip()
+    relevant = "\n\n".join([b.strip() for b in (ctx.relevant_traces or []) if b.strip()]).strip()
     if relevant:
         parts.append("")
         parts.append("Relevant prior work:")
         parts.append(relevant)
 
-    history = "\n\n".join([b.strip() for b in (ctx.agent_history or []) if b.strip()]).strip()
+    history = "\n\n".join([b.strip() for b in (ctx.agent_logs or []) if b.strip()]).strip()
     if history:
         parts.append("")
         parts.append("Agent history:")

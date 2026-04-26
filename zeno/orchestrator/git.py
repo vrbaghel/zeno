@@ -45,6 +45,29 @@ async def ensure_git_initialized(working_directory: str) -> None:
         )
 
 
+async def ensure_initial_commit(working_directory: str) -> None:
+    """
+    Create an empty initial commit if the repo has no commits yet.
+
+    This prevents `git worktree add -b ...` and later merges from failing when the
+    target branch has no history (e.g. freshly `git init`'d repos).
+    """
+    root = str(Path(working_directory).resolve())
+    rc, _out, _err = await _run_git(["rev-parse", "HEAD"], cwd=root)
+    if rc == 0:
+        return
+
+    rc2, out2, err2 = await _run_git(
+        ["commit", "--allow-empty", "-m", "chore: initial commit"],
+        cwd=root,
+    )
+    if rc2 != 0:
+        raise InitializationError(
+            "Failed to create initial git commit",
+            detail=(out2 + "\n" + err2).strip(),
+        )
+
+
 async def create_worktree(
     working_directory: str,
     session_id: UUID,
@@ -105,4 +128,33 @@ async def cleanup_worktree(
     rc2, out2, err2 = await _run_git(["branch", "-D", branch_name], cwd=str(root))
     if rc2 != 0:
         logger.warning("branch delete failed: %s", (out2 + "\n" + err2).strip())
+
+
+async def commit_worktree_changes(worktree_path: str, task_title: str) -> None:
+    """Stage and commit all changes in the worktree."""
+    root = str(Path(worktree_path).resolve())
+
+    rc, out, err = await _run_git(["status", "--porcelain"], cwd=root)
+    if rc != 0:
+        raise InitializationError(
+            "Failed to check worktree status",
+            detail=(out + "\n" + err).strip(),
+        )
+    if not out.strip():
+        return
+
+    rc2, out2, err2 = await _run_git(["add", "-A"], cwd=root)
+    if rc2 != 0:
+        raise InitializationError(
+            "Failed to stage worktree changes",
+            detail=(out2 + "\n" + err2).strip(),
+        )
+
+    msg = f"feat: {task_title}".strip()
+    rc3, out3, err3 = await _run_git(["commit", "-m", msg], cwd=root)
+    if rc3 != 0:
+        raise InitializationError(
+            "Failed to commit worktree changes",
+            detail=(out3 + "\n" + err3).strip(),
+        )
 

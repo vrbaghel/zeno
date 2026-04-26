@@ -49,6 +49,13 @@ class LeadAgentTerminationError(ZenoError):
         super().__init__(code="LEAD_AGENT_TERMINATED", message=message, detail=detail)
 
 
+class WorkerTerminationError(ZenoError):
+    """Raised when a worker agent cannot complete its task."""
+
+    def __init__(self, message: str, *, detail: str | None = None) -> None:
+        super().__init__(code="WORKER_TERMINATED", message=message, detail=detail)
+
+
 class MergeError(ZenoError):
     def __init__(self, message: str, *, detail: str | None = None) -> None:
         super().__init__(code="MERGE_ERROR", message=message, detail=detail)

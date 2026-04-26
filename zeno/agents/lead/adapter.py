@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+import os
 import json
 import traceback
 from typing import Any
@@ -14,6 +15,7 @@ from zeno.agents.models import (
     ClarificationAnswer,
     ClarificationQuestion,
     ExecutionPlanResponse,
+    LEAD_AGENT_OUTPUT_SCHEMA,
     TerminateResponse,
     validate_lead_response,
 )
@@ -92,18 +94,6 @@ class LeadAgentAdapter:
             raise ValidationError("Cannot revise before dispatch()", detail="session_id is not set")
         return await self._run(context=context, resume_session_id=self._session_id)
 
-    def _output_schema(self) -> dict[str, Any]:
-        # Union schema discriminated by `type`.
-        exec_schema = ExecutionPlanResponse.model_json_schema()
-        term_schema = TerminateResponse.model_json_schema()
-        return {
-            "type": "json_schema",
-            "schema": {
-                "oneOf": [exec_schema, term_schema],
-                "discriminator": {"propertyName": "type"},
-            },
-        }
-
     async def _run(self, *, context: LeadAgentContext, resume_session_id: str | None) -> ExecutionPlanResponse:
         if ClaudeSDKClient is None or ClaudeAgentOptions is None:
             raise ValidationError(
@@ -120,49 +110,60 @@ class LeadAgentAdapter:
             context=context,
         )
 
-        allowed_tools: list[str] = []
-        if self.execution_mode == ExecutionMode.HITL:
-            allowed_tools = ["AskUserQuestion"]
-
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
-            allowed_tools=allowed_tools,
-            permission_mode="acceptEdits",
-            output_format=self._output_schema(),
+            disallowed_tools=[
+                "Bash",
+                "Write",
+                "Edit",
+                "Read",
+                "Glob",
+                "Grep",
+                "WebSearch",
+                "WebFetch",
+                "Task",
+            ],
+            output_format=LEAD_AGENT_OUTPUT_SCHEMA,
+            permission_mode="default",
             cwd=self.working_directory,
             resume=resume_session_id,
         )
 
-        async with ClaudeSDKClient(options) as client:
+        async with ClaudeSDKClient(options=options) as client:
             await client.query(context.raw_input)
 
-            async for msg in client.receive_response():
-                if AssistantMessage is not None and isinstance(msg, AssistantMessage):
-                    ask = self._extract_ask_user_question(msg)
-                    if ask is None:
+            while True:
+                async for msg in client.receive_response():
+                    if AssistantMessage is not None and isinstance(msg, AssistantMessage):
+                        ask = self._extract_ask_user_question(msg)
+                        if ask is None:
+                            continue
+                        if self.execution_mode == ExecutionMode.YOLO:
+                            raise ValidationError("AskUserQuestion used in YOLO mode")
+                        if self.hitl_callback is None:
+                            raise ValidationError(
+                                "AskUserQuestion requested but no hitl_callback configured"
+                            )
+                        await self._answer_questions(client, ask)
+                        # Start a fresh receive_response() for the follow-up query.
+                        break
+
+                    # Tool results can appear as UserMessage; ignore them and wait for ResultMessage.
+                    if UserMessage is not None and isinstance(msg, UserMessage):
                         continue
-                    if self.execution_mode == ExecutionMode.YOLO:
-                        raise ValidationError("AskUserQuestion used in YOLO mode")
-                    if self.hitl_callback is None:
-                        raise ValidationError("AskUserQuestion requested but no hitl_callback configured")
-                    await self._answer_questions(client, ask)
-                    continue
 
-                # Tool results can appear as UserMessage; ignore them and wait for ResultMessage.
-                if UserMessage is not None and isinstance(msg, UserMessage):
-                    continue
-
-                if ResultMessage is not None and isinstance(msg, ResultMessage):
-                    self._session_id = getattr(msg, "session_id", None) or self._session_id
-                    output = getattr(msg, "structured_output", None)
-                    if output is None:
-                        # SDKs may use different attribute names depending on version.
-                        output = getattr(msg, "output", None)
-                    if output is None:
-                        output = getattr(msg, "result", None)
-                    return self._parse_structured_output(output)
-
-        raise ParseError("Lead agent did not produce a ResultMessage")
+                    if ResultMessage is not None and isinstance(msg, ResultMessage):
+                        self._session_id = getattr(msg, "session_id", None) or self._session_id
+                        output = getattr(msg, "structured_output", None)
+                        if output is None:
+                            # SDKs may use different attribute names depending on version.
+                            output = getattr(msg, "output", None)
+                        if output is None:
+                            output = getattr(msg, "result", None)
+                        return self._parse_structured_output(output)
+                else:
+                    # receive_response() exhausted without yielding a ResultMessage.
+                    raise ParseError("Lead agent did not produce a ResultMessage")
 
     def _extract_ask_user_question(self, msg) -> _AskUserQuestion | None:
         if not hasattr(msg, "content"):
