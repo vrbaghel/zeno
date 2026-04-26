@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -39,6 +40,26 @@ class WorkerResponse(BaseModel):
     summary: str
     artifacts: AgentArtifacts = Field(default_factory=AgentArtifacts)
     log: MemLog
+
+
+class WorkerMetrics(BaseModel):
+    queued_at: datetime
+    first_token_at: datetime | None = None
+    completed_at: datetime
+
+    latency_ms: int
+    time_to_first_token_ms: int | None = None
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+
+    cost_usd: float | None = None
+    model: str | None = None
+    num_turns: int | None = None
 
 
 class TerminateResponse(BaseModel):
@@ -87,6 +108,18 @@ class ExecutionPlanResponse(BaseModel):
     tasks: list[TaskDefinition] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     log: MemLog
+
+
+WORKER_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "schema": WorkerResponse.model_json_schema(),
+}
+
+
+EXECUTION_PLAN_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "schema": ExecutionPlanResponse.model_json_schema(),
+}
 
 
 class ClarificationInput(BaseModel):

@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from zeno.agents.models import AgentArtifacts
+from zeno.agents.models import WorkerMetrics
 from zeno.db.engine import get_session_factory
 from zeno.db.models import (
     AgentMode,
@@ -534,22 +535,24 @@ async def save_task_metrics(
     assignment_id: uuid.UUID,
     task_id: uuid.UUID,
     session_id: uuid.UUID,
-    metrics: dict[str, Any] | None = None,
+    metrics: WorkerMetrics,
 ) -> DbTaskMetrics:
     factory = get_session_factory()
     async with factory() as db:
-        # Migration 1: adaptor/SDK metrics are not wired up yet. Persist empty/null metrics.
         m = DbTaskMetrics(
             assignment_id=assignment_id,
             task_id=task_id,
             session_id=session_id,
-            latency_ms=None,
-            time_to_first_token_ms=None,
-            tokens_input=None,
-            tokens_output=None,
-            tokens_total=None,
-            tokens_estimated=True,
-            token_deviation=None,
+            latency_ms=metrics.latency_ms,
+            time_to_first_token_ms=metrics.time_to_first_token_ms,
+            tokens_input=metrics.input_tokens,
+            tokens_output=metrics.output_tokens,
+            tokens_total=metrics.total_tokens,
+            cache_read_tokens=metrics.cache_read_tokens,
+            cache_creation_tokens=metrics.cache_creation_tokens,
+            cost_usd=metrics.cost_usd,
+            num_turns=metrics.num_turns,
+            model=metrics.model,
             artifacts_created=0,
             artifacts_updated=0,
             artifacts_deleted=0,
