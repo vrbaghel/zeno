@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from uuid import UUID
 
 import typer
@@ -40,13 +41,27 @@ def main(
     console.print(f"[bold]Zeno[/bold] v{__version__}")
 
     execution_mode = ExecutionMode.YOLO if yolo else ExecutionMode.HITL
+    # Ensure Ctrl+C / termination signals exit immediately.
+    def _terminate(_signum, _frame) -> None:  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt
 
-    asyncio.run(
-        _interactive_main(
-            console=console,
-            execution_mode=execution_mode,
+    try:
+        signal.signal(signal.SIGINT, _terminate)
+        signal.signal(signal.SIGTERM, _terminate)
+    except Exception:
+        # Signal handling is best-effort (platform / interpreter dependent).
+        pass
+
+    try:
+        asyncio.run(
+            _interactive_main(
+                console=console,
+                execution_mode=execution_mode,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        console.print("Goodbye.")
+        raise typer.Exit(code=130)
 
 
 async def _interactive_main(
@@ -78,36 +93,44 @@ async def _interactive_main(
         vault_name=orchestrator.vault_name,
     )
 
-    while True:
-        raw = await async_input("> ")
-        parsed = parse_input(raw)
+    try:
+        while True:
+            raw = await async_input("> ")
+            parsed = parse_input(raw)
 
-        if isinstance(parsed, SlashCommand):
-            if parsed.command == "quit":
-                await orchestrator.teardown()
-                console.print("Goodbye.")
-                return
-            if parsed.command == "status":
-                sid: UUID | None = None
-                st: OrchestratorState | None = None
-                if orchestrator.current_session is not None:
-                    sid = orchestrator.current_session.id
-                    st = await orchestrator.db_repo.get_orchestrator_state(sid)
-                cli_display.print_status(
-                    console,
-                    session_id=sid,
-                    orchestrator_state=st,
-                    working_directory=orchestrator.working_directory,
-                    execution_mode=execution_mode,
-                )
-            elif parsed.command == "help":
-                cli_display.print_help(console)
-            continue
-
-        if isinstance(parsed, TaskInput):
-            if not parsed.text.strip():
+            if isinstance(parsed, SlashCommand):
+                if parsed.command == "quit":
+                    await orchestrator.teardown()
+                    console.print("Goodbye.")
+                    return
+                if parsed.command == "status":
+                    sid: UUID | None = None
+                    st: OrchestratorState | None = None
+                    if orchestrator.current_session is not None:
+                        sid = orchestrator.current_session.id
+                        st = await orchestrator.db_repo.get_orchestrator_state(sid)
+                    cli_display.print_status(
+                        console,
+                        session_id=sid,
+                        orchestrator_state=st,
+                        working_directory=orchestrator.working_directory,
+                        execution_mode=execution_mode,
+                    )
+                elif parsed.command == "help":
+                    cli_display.print_help(console)
                 continue
-            await orchestrator.run(parsed.text)
+
+            if isinstance(parsed, TaskInput):
+                if not parsed.text.strip():
+                    continue
+                await orchestrator.run(parsed.text)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Ensure immediate exit on Ctrl+C.
+        try:
+            await orchestrator.teardown()
+        finally:
+            console.print("Goodbye.")
+        return
 
 
 def run() -> None:

@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from zeno.core.enums import ExecutionMode, OrchestratorState
+from zeno.db.engine import create_all_tables
 from zeno.db.models import DbSession, SessionStatus
 from zeno.memory import mind
 from zeno.orchestrator.errors import InitializationError, StorageError
@@ -30,9 +31,21 @@ async def prepare_workspace(working_directory: str, *, db_repo) -> tuple[str, st
     await ensure_git_initialized(wd)
 
     try:
+        # Ensure SQLite schema exists before mind init touches vault/room tables.
+        await create_all_tables()
+    except Exception as e:
+        raise InitializationError(
+            "Failed to initialize SQLite schema",
+            detail=f"{type(e).__name__}: {e}",
+        ) from e
+
+    try:
         vault = await mind.initialize_vault(wd)
     except Exception as e:
-        raise InitializationError("Failed to initialize mind storage", detail=str(e)) from e
+        raise InitializationError(
+            "Failed to initialize mind storage",
+            detail=f"{type(e).__name__}: {e}",
+        ) from e
 
     try:
         existing = await db_repo.get_vault_by_path(wd)

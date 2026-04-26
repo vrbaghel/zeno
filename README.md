@@ -1,51 +1,55 @@
 # Zeno
 
-Zeno is a multi-agent orchestration framework.
+Zeno is a multi-agent orchestration framework with:
 
-Phase 1 implements a single CLI command, `zeno`, that bootstraps configuration, resolves runtime mode, validates the mode, prints a startup summary, and exits.
+- an interactive CLI (`zeno`)
+- a lead agent that produces an execution plan
+- worker agents that execute tasks in isolated git worktrees
+- persistence via SQLite (orchestrator state) and ChromaDB (semantic memory)
 
-## Phase 2 (Agents adapters)
+## Install (dev)
 
-Phase 2 adds the **Agents** adaptor layer: shared contracts (`AdaptorRequest`, `AdaptorResponse`, `AgentResponse`, metrics, errors) and a **Gemini** CLI adaptor that dispatches requests and returns structured results.
-
-For a quick end-to-end check from the CLI (temporary test hook):
+From the repo root:
 
 ```bash
-zeno test-adaptor
-zeno test-adaptor --prompt "Your prompt here"
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e .
 ```
 
-Programmatic usage (same stack the adaptor uses):
+## Run
 
-```python
-import asyncio
-
-from zeno.agents.models import AdaptorMessage, AdaptorRequest, AdaptorRequestPayload
-from zeno.agents.registry import AdaptorRegistry
-
-
-async def main():
-    registry = AdaptorRegistry.discover()
-    adaptor = registry.default()
-
-    req = AdaptorRequest(
-        agent_id="demo-agent",
-        payload=AdaptorRequestPayload(
-            system="You are a helpful assistant.",
-            messages=[AdaptorMessage(role="user", content="Say hello.")],
-        ),
-    )
-
-    result = await adaptor.dispatch(req)
-    print(result)
-
-
-asyncio.run(main())
+```bash
+zeno          # HITL mode (default)
+zeno --yolo   # YOLO mode
 ```
 
-## Phase 3 (relational database layer)
+The `zeno` command starts an **interactive** session:
 
-Phase 3 adds a **SQLite** persistence layer under `zeno/db/`, exposed through **SQLAlchemy 2.x** (async) and **Alembic** migrations. This layer is passive: it stores and retrieves orchestration state; it does not run agents or make orchestration decisions.
+- One long-lived `OrchestratorCore`
+- A new SQLite `DbSession` per task line you enter
+- Slash commands: `/quit`, `/status`, `/help`
+
+## Core terminology
+
+| Term | Meaning |
+|------|---------|
+| **`vault`** | Per-project namespace, derived from the working directory name (slugified) and stored in SQLite (`vaults` table). |
+| **`room`** | A lead-defined topic area under a vault (e.g. `auth`, `frontend`), stored in SQLite (`rooms` table). |
+| **`trace`** | One semantic-searchable entry stored in ChromaDB (typically one per completed task). |
+| **`log`** | A structured briefing authored by an agent after task completion; stored as the trace document. |
+| **`session`** | One user-submitted task line persisted to SQLite (`sessions` table). |
+| **`execution_plan`** | A plan revision produced by the lead agent, persisted to SQLite (`execution_plans`, `tasks`, `task_dependencies`). |
+
+## Persistence
+
+- **SQLite (orchestrator state)**: default path is **`<cwd>/.zeno/zeno.db`** (override via `ZENO_DATABASE_URL`).
+- **ChromaDB (memory)**: local persistence under **`<cwd>/.zeno/mind/chroma/`**, one collection per vault named **`zeno_<vaultSlug>`**.
+
+## Database layer (SQLite)
+
+Zeno stores orchestration state under `zeno/db/` using **SQLAlchemy 2.x (async)**.
 
 ### Terminology
 
@@ -57,11 +61,11 @@ Phase 3 adds a **SQLite** persistence layer under `zeno/db/`, exposed through **
 | **`execution_plans`** | One decomposition graph per plan revision; linked to a session. Revisions increment when a plan is revised. |
 | **`tasks`** | Atomic work units (title, description, type, status, priority, optional parallel group, HITL checkpoint flag, result summary). |
 | **`task_dependencies`** | Directed edges: `task_id` depends on `depends_on_task_id`. |
-| **`agents`** | Registered agents: stable `name`, `type` (lead / coding / …), `system_prompt`, `provider`, `mode` (`adapter` \| `api`). |
+| **`agents`** | Registered agents: stable `name`, `type` (lead / coding / …), `system_prompt`. |
 | **`agent_assignments`** | Links a **task** to an **`agents`** row for one dispatch attempt (`started_at` / `completed_at`, assignment status). Provider/mode/type live on `agents`, not duplicated here. |
 | **`task_metrics`** | Token and timing counts (and artifact counts) attached to a **completed** assignment row. |
 | **`checkpoints`** | HITL checkpoint history (`presented` / `response` JSON payloads). |
-| **`artifacts`** | File paths touched on disk, derived from adaptor artifact lists. |
+| **`artifacts`** | File paths touched on disk, derived from agent artifact lists. |
 | **`repository.py`** | All async DB operations in one module (`create_session`, `get_runnable_tasks`, …). |
 
 ### Agents and assignments
@@ -114,17 +118,6 @@ Database-related runtime dependencies are declared in `pyproject.toml` (`sqlalch
 
 Phase 4 adds an embedded **ChromaDB** memory layer under `zeno/memory/` that can persist and retrieve agent-authored context across sessions.
 
-### Terminology
-
-| Term | Meaning |
-|------|---------|
-| **`vault`** | A per-project namespace, derived from the working directory name (slugified) and stored in SQLite (`vaults` table). |
-| **`room`** | A lead-agent-defined topic area under a vault (e.g. `authentication`, `frontend`), stored in SQLite (`rooms` table). |
-| **`trace`** | One semantic-searchable entry stored in ChromaDB (typically one per completed task). |
-| **`log`** | A structured briefing authored by an agent after task completion; stored as the trace document. |
-| **`MemContext`** | Assembled context (session summary + relevant traces + agent logs) suitable for prompt injection. |
-| **`agent_id`** | The agent instance identifier stored in trace metadata, used to scope history retrieval to a specific agent instance when desired. |
-
 ### Persistence
 
 - **SQLite**: vaults/rooms are stored in the relational DB.
@@ -135,7 +128,7 @@ Phase 4 adds an embedded **ChromaDB** memory layer under `zeno/memory/` that can
 
 ### Adapter contract changes
 
-`AgentResponse` now supports an optional `log` block. The Gemini adapter prompts agents to emit it and logs a warning if it is missing (missing logs are recoverable).
+Agent responses support an optional `log` block. Zeno stores this as a memory `trace` document after task completion.
 
 ### Smoke test (memory)
 
@@ -204,7 +197,7 @@ Phase 6 introduces the first **end-to-end orchestrator** under `zeno/orchestrato
 
 - Initializes the session (creates `./.zeno/`, ensures git, initializes the memory vault, creates SQLite session).
 - Creates a git worktree under `./.zeno/worktrees/<session_id>/<task_id>` and a branch `zeno/<session_id>/<task_id>`.
-- Dispatches a single “test agent” via the Gemini adaptor, saves metrics + artifacts to SQLite, and saves a memory trace to ChromaDB.
+- Dispatches a worker agent, saves metrics + artifacts to SQLite, and saves a memory trace to ChromaDB.
 - Merges the worktree branch back to the current branch, then cleans up the worktree and branch.
 - Marks the session as completed (or failed on first error).
 
@@ -218,7 +211,7 @@ Run from the repository root, using the repo-local venv:
 
 Optional settings:
 
-- `ORCHESTRATOR_TIMEOUT_SECONDS`: overrides adaptor dispatch timeout for the orchestrator (default: 60).
+- `ORCHESTRATOR_TIMEOUT_SECONDS`: overrides agent dispatch timeout for the orchestrator (default: 60).
 
 ## Phase 7 (CLI and orchestrator)
 
@@ -229,5 +222,5 @@ zeno
 zeno --yolo
 ```
 
-The Phase 2 adaptor smoke hook remains: `zeno test-adaptor`.
+The CLI is intended to be the primary entrypoint.
 

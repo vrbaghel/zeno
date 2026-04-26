@@ -125,6 +125,8 @@ def print_completion_summary(
 
 def print_error(console: Console, error: ZenoError) -> None:
     console.print(f"  [red]Error:[/red] {error.message}")
+    if getattr(error, "detail", None):
+        console.print(f"  [dim]{error.detail}[/dim]")
 
 
 def print_help(console: Console) -> None:

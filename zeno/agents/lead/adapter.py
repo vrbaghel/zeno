@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+import json
+import traceback
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -18,11 +20,28 @@ from zeno.agents.models import (
 from zeno.core.enums import ExecutionMode, LeadAgentStage
 from zeno.orchestrator.errors import LeadAgentTerminationError, ParseError, ValidationError
 
+_SDK_IMPORT_ERROR: str | None = None
+
 try:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-    from claude_agent_sdk.messages import AssistantMessage, ResultMessage, UserMessage
-    from claude_agent_sdk.content import ToolResultBlock, ToolUseBlock
-except Exception:  # pragma: no cover
+    # SDK module layout varies by version:
+    # - newer versions expose these via `claude_agent_sdk.types`
+    # - older versions used `claude_agent_sdk.messages` / `claude_agent_sdk.content`
+    try:  # pragma: no cover
+        from claude_agent_sdk.types import (  # type: ignore
+            AssistantMessage,
+            ResultMessage,
+            UserMessage,
+            ToolResultBlock,
+            ToolUseBlock,
+        )
+    except Exception:  # pragma: no cover
+        from claude_agent_sdk.messages import AssistantMessage, ResultMessage, UserMessage  # type: ignore
+        from claude_agent_sdk.content import ToolResultBlock, ToolUseBlock  # type: ignore
+except Exception as e:  # pragma: no cover
+    _SDK_IMPORT_ERROR = "".join(
+        traceback.format_exception(type(e), e, e.__traceback__)
+    ).strip()
     ClaudeAgentOptions = None  # type: ignore[assignment]
     ClaudeSDKClient = None  # type: ignore[assignment]
     AssistantMessage = ResultMessage = UserMessage = None  # type: ignore[assignment]
@@ -89,7 +108,10 @@ class LeadAgentAdapter:
         if ClaudeSDKClient is None or ClaudeAgentOptions is None:
             raise ValidationError(
                 "claude-agent-sdk is not available in this environment",
-                detail="Install claude-agent-sdk and ensure it is importable.",
+                detail=(
+                    "Install claude-agent-sdk and ensure it is importable.\n"
+                    + (f"SDK import error:\n{_SDK_IMPORT_ERROR}" if _SDK_IMPORT_ERROR else "")
+                ).strip(),
             )
 
         system_prompt = compose_prompt(
@@ -133,6 +155,11 @@ class LeadAgentAdapter:
                 if ResultMessage is not None and isinstance(msg, ResultMessage):
                     self._session_id = getattr(msg, "session_id", None) or self._session_id
                     output = getattr(msg, "structured_output", None)
+                    if output is None:
+                        # SDKs may use different attribute names depending on version.
+                        output = getattr(msg, "output", None)
+                    if output is None:
+                        output = getattr(msg, "result", None)
                     return self._parse_structured_output(output)
 
         raise ParseError("Lead agent did not produce a ResultMessage")
@@ -177,8 +204,34 @@ class LeadAgentAdapter:
         await client.query(payload)
 
     def _parse_structured_output(self, output: Any) -> ExecutionPlanResponse:
+        if output is None:
+            raise ParseError("structured_output is not an object", detail="structured_output=None")
+
+        # Some SDK versions return JSON as a string.
+        if isinstance(output, str):
+            try:
+                output = json.loads(output)
+            except Exception as e:
+                raise ParseError(
+                    "structured_output is not an object",
+                    detail=f"structured_output is str but not valid JSON: {type(e).__name__}: {e}; value={output[:500]!r}",
+                ) from e
+
+        # Some SDK versions return pydantic models / objects with `model_dump()`.
+        if not isinstance(output, dict) and hasattr(output, "model_dump"):
+            try:
+                output = output.model_dump()
+            except Exception as e:
+                raise ParseError(
+                    "structured_output is not an object",
+                    detail=f"structured_output has model_dump() but it failed: {type(e).__name__}: {e}",
+                ) from e
+
         if not isinstance(output, dict):
-            raise ParseError("structured_output is not an object", detail=repr(output)[:500])
+            raise ParseError(
+                "structured_output is not an object",
+                detail=f"type={type(output).__name__} value={repr(output)[:500]}",
+            )
 
         otype = output.get("type")
         if otype == "terminate":

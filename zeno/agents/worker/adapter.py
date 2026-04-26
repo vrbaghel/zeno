@@ -2,16 +2,25 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+import traceback
 
 from zeno.agents.models import AgentContext, WorkerMetrics, WorkerResponse, WORKER_RESPONSE_SCHEMA
 from zeno.agents.worker.composer import build_system_prompt
 from zeno.orchestrator.errors import ParseError
 from zeno.orchestrator.errors import map_sdk_error  # added in Migration 3
 
+_SDK_IMPORT_ERROR: str | None = None
+
 try:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-    from claude_agent_sdk.messages import AssistantMessage, ResultMessage
-except Exception:  # pragma: no cover
+    try:  # pragma: no cover
+        from claude_agent_sdk.types import AssistantMessage, ResultMessage  # type: ignore
+    except Exception:  # pragma: no cover
+        from claude_agent_sdk.messages import AssistantMessage, ResultMessage  # type: ignore
+except Exception as e:  # pragma: no cover
+    _SDK_IMPORT_ERROR = "".join(
+        traceback.format_exception(type(e), e, e.__traceback__)
+    ).strip()
     ClaudeAgentOptions = None  # type: ignore[assignment]
     ClaudeSDKClient = None  # type: ignore[assignment]
     AssistantMessage = ResultMessage = None  # type: ignore[assignment]
@@ -36,7 +45,12 @@ class WorkerAdapter:
         - task.agent_responsibilities
         """
         if ClaudeSDKClient is None or ClaudeAgentOptions is None:
-            raise map_sdk_error(ImportError("claude-agent-sdk is not available"))
+            raise map_sdk_error(
+                ImportError(
+                    "claude-agent-sdk is not available"
+                    + (f"\nSDK import error:\n{_SDK_IMPORT_ERROR}" if _SDK_IMPORT_ERROR else "")
+                )
+            )
 
         agent_type = str(getattr(task, "agent_type", "") or "")
         agent_responsibilities = getattr(task, "agent_responsibilities", None)

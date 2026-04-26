@@ -109,6 +109,10 @@ class OrchestratorCore:
         assert self.current_session is not None
         old_state = await self.db_repo.get_orchestrator_state(self.current_session.id)
 
+        # Treat self-transitions as idempotent no-ops.
+        if old_state == new_state:
+            return
+
         if not self._sm.can_transition(old_state, new_state):
             raise UnknownError(
                 f"Illegal orchestrator state transition: {old_state} -> {new_state}",
