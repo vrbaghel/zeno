@@ -10,7 +10,7 @@ from zeno.orchestrator.core import OrchestratorCore
 
 
 async def main() -> None:
-    working_directory = os.environ.get("CHANAKYA_SMOKE_WD") or os.getcwd()
+    working_directory = os.environ.get("ZENO_SMOKE_WD") or os.getcwd()
 
     orchestrator = OrchestratorCore(
         execution_mode=ExecutionMode.YOLO,
