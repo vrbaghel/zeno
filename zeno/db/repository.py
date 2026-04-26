@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from zeno.agents.models import AdaptorArtifacts, AdaptorMetrics
+from zeno.agents.models import AgentArtifacts
 from zeno.db.engine import get_session_factory
 from zeno.db.models import (
     AgentMode,
@@ -531,24 +531,28 @@ async def complete_assignment(assignment_id: uuid.UUID) -> None:
 
 
 async def save_task_metrics(
-    assignment_id: uuid.UUID, task_id: uuid.UUID, session_id: uuid.UUID, metrics: AdaptorMetrics
+    assignment_id: uuid.UUID,
+    task_id: uuid.UUID,
+    session_id: uuid.UUID,
+    metrics: dict[str, Any] | None = None,
 ) -> DbTaskMetrics:
     factory = get_session_factory()
     async with factory() as db:
+        # Migration 1: adaptor/SDK metrics are not wired up yet. Persist empty/null metrics.
         m = DbTaskMetrics(
             assignment_id=assignment_id,
             task_id=task_id,
             session_id=session_id,
-            latency_ms=metrics.timing.latency_ms,
-            time_to_first_token_ms=metrics.timing.time_to_first_token_ms,
-            tokens_input=metrics.tokens.input,
-            tokens_output=metrics.tokens.output,
-            tokens_total=metrics.tokens.total,
+            latency_ms=None,
+            time_to_first_token_ms=None,
+            tokens_input=None,
+            tokens_output=None,
+            tokens_total=None,
             tokens_estimated=True,
-            token_deviation=metrics.tokens.deviation,
-            artifacts_created=metrics.artifacts.created_count,
-            artifacts_updated=metrics.artifacts.updated_count,
-            artifacts_deleted=metrics.artifacts.deleted_count,
+            token_deviation=None,
+            artifacts_created=0,
+            artifacts_updated=0,
+            artifacts_deleted=0,
         )
         db.add(m)
         await db.commit()
@@ -629,7 +633,7 @@ async def get_pending_checkpoint(session_id: uuid.UUID) -> DbCheckpoint | None:
 
 
 async def save_artifacts(
-    assignment_id: uuid.UUID, task_id: uuid.UUID, session_id: uuid.UUID, artifacts: AdaptorArtifacts
+    assignment_id: uuid.UUID, task_id: uuid.UUID, session_id: uuid.UUID, artifacts: AgentArtifacts
 ) -> list[DbArtifact]:
     factory = get_session_factory()
     records: list[DbArtifact] = []

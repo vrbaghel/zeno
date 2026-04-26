@@ -1,137 +1,38 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
 from typing import Any, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from zeno.core.enums import OrchestratorState
 from zeno.memory.models import MemLog
 
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+AgentRole = Literal["system", "user", "assistant", "tool"]
 
 
-AdaptorRole = Literal["system", "user", "assistant", "tool"]
-
-
-class AdaptorMessage(BaseModel):
-    role: AdaptorRole
+class AgentMessage(BaseModel):
+    role: AgentRole
     content: str
 
 
-class AdaptorArtifacts(BaseModel):
+class AgentArtifacts(BaseModel):
     created: list[str] = Field(default_factory=list)
     updated: list[str] = Field(default_factory=list)
     deleted: list[str] = Field(default_factory=list)
 
 
-class AdaptorRequestPayload(BaseModel):
-    system: str | None = None
-    messages: list[AdaptorMessage] = Field(default_factory=list)
-    tools: list[dict] = Field(default_factory=list)
-
-
-class AdaptorRequest(BaseModel):
-    id: UUID = Field(default_factory=uuid4)
-    session_id: UUID = Field(default_factory=uuid4)
-    agent_id: str
-    created_at: datetime = Field(default_factory=utc_now)
-    payload: AdaptorRequestPayload = Field(default_factory=AdaptorRequestPayload)
-    timeout_seconds: float | None = 120.0
-
-
-class AdaptorResponseStatus(str, Enum):
-    success = "success"
-    error = "error"
-    timeout = "timeout"
-    truncated = "truncated"
-
-
-class AdaptorResponsePayload(BaseModel):
-    messages: list[AdaptorMessage] = Field(default_factory=list)
-
-
-class DiaryEntry(BaseModel):
-    summary: str
-    decisions: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
-    dependencies: list[str] = Field(default_factory=list)
-    open_issues: list[str] = Field(default_factory=list)
-    room: str
-
-
 class AgentResponse(BaseModel):
-    status: Literal["success", "error", "truncated"]
-    payload: AdaptorResponsePayload = Field(default_factory=AdaptorResponsePayload)
-    artifacts: AdaptorArtifacts = Field(default_factory=AdaptorArtifacts)
-    log: DiaryEntry | None = None
+    """
+    Minimal response contract Zeno needs back from an agent under the SDK model:
+    - summary: what was done
+    - artifacts: files created/updated/deleted
+    - log: MemLog diary entry for ChromaDB
+    """
 
-
-class AdaptorResponse(BaseModel):
-    id: UUID = Field(default_factory=uuid4)
-    request_id: UUID
-    session_id: UUID
-    agent_id: str
-    status: AdaptorResponseStatus
-    created_at: datetime = Field(default_factory=utc_now)
-    payload: AdaptorResponsePayload = Field(default_factory=AdaptorResponsePayload)
-    artifacts: AdaptorArtifacts = Field(default_factory=AdaptorArtifacts)
-
-
-class AdaptorErrorCode(str, Enum):
-    ADAPTOR_NOT_FOUND = "ADAPTOR_NOT_FOUND"
-    ADAPTOR_SPAWN_FAILED = "ADAPTOR_SPAWN_FAILED"
-    ADAPTOR_TIMEOUT = "ADAPTOR_TIMEOUT"
-    ADAPTOR_PARSE_ERROR = "ADAPTOR_PARSE_ERROR"
-    CONTEXT_OVERFLOW = "CONTEXT_OVERFLOW"
-    RESPONSE_TRUNCATED = "RESPONSE_TRUNCATED"
-    UNKNOWN = "UNKNOWN"
-
-
-class AdaptorError(BaseModel):
-    id: UUID = Field(default_factory=uuid4)
-    request_id: UUID | None = None
-    agent_id: str | None = None
-    created_at: datetime = Field(default_factory=utc_now)
-    code: AdaptorErrorCode
-    message: str
-    recoverable: bool = False
-
-
-class AdaptorTimingMetrics(BaseModel):
-    queued_at: datetime | None = None
-    dispatched_at: datetime | None = None
-    first_token_at: datetime | None = None
-    completed_at: datetime | None = None
-    latency_ms: int | None = None
-    time_to_first_token_ms: int | None = None
-
-
-class AdaptorTokenMetrics(BaseModel):
-    input: int | None = None
-    output: int | None = None
-    total: int | None = None
-    deviation: str | None = None
-
-
-class AdaptorArtifactMetrics(BaseModel):
-    created_count: int = 0
-    updated_count: int = 0
-    deleted_count: int = 0
-
-
-class AdaptorMetrics(BaseModel):
-    timing: AdaptorTimingMetrics = Field(default_factory=AdaptorTimingMetrics)
-    tokens: AdaptorTokenMetrics = Field(default_factory=AdaptorTokenMetrics)
-    artifacts: AdaptorArtifactMetrics = Field(default_factory=AdaptorArtifactMetrics)
-    agent_id: str
-    mode: Literal["adapter", "api"]
-    provider: Literal["gemini", "anthropic", "openai"]
-    model: str | None = None
+    summary: str
+    artifacts: AgentArtifacts = Field(default_factory=AgentArtifacts)
+    log: MemLog
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +70,7 @@ class TaskDefinition(BaseModel):
     agent_type: LeadAgentTypeLiteral
     provider: str
     room: str
+    agent_responsibilities: str | None = None
     depends_on: list[str] = Field(default_factory=list)
     parallel_group: str | None = None
     checkpoint_before: bool = False
@@ -180,23 +82,7 @@ class ExecutionPlanResponse(BaseModel):
     rooms: list[RoomDefinition] = Field(default_factory=list)
     tasks: list[TaskDefinition] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
-    log: DiaryEntry
-
-
-# ---------------------------------------------------------------------------
-# Phase 8A: Unified lead agent response schema
-# ---------------------------------------------------------------------------
-
-
-class OptionDefinition(BaseModel):
-    label: str
-    description: str
-
-
-class UserOptions(BaseModel):
-    option_a: OptionDefinition
-    option_b: OptionDefinition
-    option_c: OptionDefinition
+    log: MemLog
 
 
 class LeadAgentResponse(BaseModel):
@@ -205,7 +91,7 @@ class LeadAgentResponse(BaseModel):
     # clarification
     question: str | None = None
     context: str | None = None
-    options: UserOptions | None = None
+    options: list[str] | None = None
 
     # execution
     task_summary: str | None = None
@@ -221,7 +107,7 @@ class LeadAgentResponse(BaseModel):
 class ClarificationInput(BaseModel):
     type: Literal["clarification_response"] = "clarification_response"
     question: str
-    choice: Literal["a", "b", "c"]
+    choice: str
     label: str
 
 
@@ -283,23 +169,6 @@ def validate_lead_response(
     if rtype == "clarification":
         if not (response.question and response.question.strip()):
             errors.append("question must be non-empty for type=clarification")
-
-        if response.options is None:
-            errors.append("options must be present for type=clarification")
-            return errors
-
-        # Ensure the three options exist and labels are non-empty.
-        for key, opt in (
-            ("option_a", response.options.option_a),
-            ("option_b", response.options.option_b),
-            ("option_c", response.options.option_c),
-        ):
-            if opt is None:
-                errors.append(f"{key} must be non-null for type=clarification")
-                continue
-            if not (opt.label and opt.label.strip()):
-                errors.append(f"{key}.label must be a non-empty string for type=clarification")
-
         return errors
 
     if rtype == "terminate":

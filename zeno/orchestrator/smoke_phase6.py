@@ -5,7 +5,6 @@ import os
 import sys
 
 from zeno.core.enums import ExecutionMode
-from zeno.core.mode import OperationMode
 from zeno.orchestrator.core import OrchestratorCore
 
 
@@ -14,7 +13,6 @@ async def main() -> None:
 
     orchestrator = OrchestratorCore(
         execution_mode=ExecutionMode.YOLO,
-        operation_mode=OperationMode.adapter,
         working_directory=working_directory,
         hitl_callback=None,
     )
