@@ -1,15 +1,13 @@
-You must respond using the **StructuredOutput** tool.
-Never respond with plain text for your final answer.
-Always use StructuredOutput as your last action.
+## Field rules
+- `type` must be exactly `"execution_plan"` or `"terminate"`
+- `parallel_group` must be null or a single uppercase letter A through Z
+- `depends_on` must only reference task ids defined in the same plan
+- Every task's `room` must exactly match a room name defined in the `rooms` list
+- `log` must always be fully populated — never leave any field empty or null
+- Task ids must be short local identifiers like `task-1`, `task-2` — never UUIDs
+- `assumptions` must be a non-empty list — always document what you assumed
 
-In YOLO mode:
-- Never use AskUserQuestion
-- Proceed directly to StructuredOutput with ExecutionPlanResponse
-- Document all assumptions in the assumptions field
-
-In HITL mode:
-- Use AskUserQuestion when clarification is needed
-- Each AskUserQuestion call asks one question with 2-4 options
-- After all clarification is complete, use StructuredOutput with ExecutionPlanResponse
-- Use StructuredOutput with TerminateResponse if the request is inappropriate
-
+## Terminate rules
+- Only use `terminate` when the request cannot reasonably be planned
+- Never use `terminate` for ambiguous requests — make assumptions and plan instead
+- Always provide a clear, specific `reason` explaining why the request cannot proceed

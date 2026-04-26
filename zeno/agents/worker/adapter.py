@@ -73,7 +73,7 @@ class WorkerAdapter:
         first_token_at: datetime | None = None
 
         try:
-            async with ClaudeSDKClient(options) as client:
+            async with ClaudeSDKClient(options=options) as client:
                 await client.query(str(getattr(task, "description", "") or ""))
 
                 async for msg in client.receive_response():
