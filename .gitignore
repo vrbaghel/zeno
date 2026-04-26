@@ -1,5 +1,5 @@
 .venv/
-.chanakya/
+.zeno/
 __pycache__/
 *.py[cod]
 

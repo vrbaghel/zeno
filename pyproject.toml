@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "chanakya"
+name = "zeno"
 version = "0.1.0"
-description = "Chanakya - A multi-agent orchestration framework"
+description = "Zeno - A multi-agent orchestration framework"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -23,12 +23,12 @@ dependencies = [
 ]
 
 [project.scripts]
-chanakya = "chanakya.cli.main:app"
+zeno = "zeno.cli.main:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["chanakya"]
+packages = ["zeno"]
 
 # Include Alembic template file in the built wheel
 [tool.hatch.build.targets.wheel.force-include]
-"chanakya/db/migrations/script.py.mako" = "chanakya/db/migrations/script.py.mako"
+"zeno/db/migrations/script.py.mako" = "zeno/db/migrations/script.py.mako"
 

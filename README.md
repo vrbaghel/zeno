@@ -1,8 +1,8 @@
-# Chanakya
+# Zeno
 
-Chanakya is a multi-agent orchestration framework.
+Zeno is a multi-agent orchestration framework.
 
-Phase 1 implements a single CLI command, `chanakya`, that bootstraps configuration, resolves runtime mode, validates the mode, prints a startup summary, and exits.
+Phase 1 implements a single CLI command, `zeno`, that bootstraps configuration, resolves runtime mode, validates the mode, prints a startup summary, and exits.
 
 ## Phase 2 (Agents adapters)
 
@@ -11,8 +11,8 @@ Phase 2 adds the **Agents** adaptor layer: shared contracts (`AdaptorRequest`, `
 For a quick end-to-end check from the CLI (temporary test hook):
 
 ```bash
-chanakya test-adaptor
-chanakya test-adaptor --prompt "Your prompt here"
+zeno test-adaptor
+zeno test-adaptor --prompt "Your prompt here"
 ```
 
 Programmatic usage (same stack the adaptor uses):
@@ -20,8 +20,8 @@ Programmatic usage (same stack the adaptor uses):
 ```python
 import asyncio
 
-from chanakya.agents.models import AdaptorMessage, AdaptorRequest, AdaptorRequestPayload
-from chanakya.agents.registry import AdaptorRegistry
+from zeno.agents.models import AdaptorMessage, AdaptorRequest, AdaptorRequestPayload
+from zeno.agents.registry import AdaptorRegistry
 
 
 async def main():
@@ -45,13 +45,13 @@ asyncio.run(main())
 
 ## Phase 3 (relational database layer)
 
-Phase 3 adds a **SQLite** persistence layer under `chanakya/db/`, exposed through **SQLAlchemy 2.x** (async) and **Alembic** migrations. This layer is passive: it stores and retrieves orchestration state; it does not run agents or make orchestration decisions.
+Phase 3 adds a **SQLite** persistence layer under `zeno/db/`, exposed through **SQLAlchemy 2.x** (async) and **Alembic** migrations. This layer is passive: it stores and retrieves orchestration state; it does not run agents or make orchestration decisions.
 
 ### Terminology
 
 | Term | Meaning |
 |------|---------|
-| **`chanakya/db/`** | Database package: engine, ORM models, repository, migrations. |
+| **`zeno/db/`** | Database package: engine, ORM models, repository, migrations. |
 | **`Db*` models** | SQLAlchemy ORM classes (`DbSession`, `DbTask`, …) — the `Db` prefix marks **persistence-layer** types so they are not confused with domain/orchestrator types later. |
 | **`sessions`** | Top-level run: user task submission, cwd, raw prompt, `ExecutionMode` (`yolo` \| `hitl`), lifecycle status. |
 | **`execution_plans`** | One decomposition graph per plan revision; linked to a session. Revisions increment when a plan is revised. |
@@ -72,38 +72,38 @@ In code, `create_agent(..., agent_type=...)` maps to the SQL column **`type`** (
 
 ### Default database location
 
-If **`CHANAKYA_DATABASE_URL`** is not set, Chanakya uses a file under the **process current working directory**:
+If **`ZENO_DATABASE_URL`** is not set, Zeno uses a file under the **process current working directory**:
 
-- **`<cwd>/.chanakya/chanakya.db`**
+- **`<cwd>/.zeno/zeno.db`**
 
-The `.chanakya/` directory is created as needed. That directory is listed in `.gitignore` so local databases are not committed.
+The `.zeno/` directory is created as needed. That directory is listed in `.gitignore` so local databases are not committed.
 
-Phase 1 **CLI user config** still lives under the home directory (`~/.chanakya/config.toml`); only the **default SQLite file** for Phase 3 is cwd-relative unless you override it with `CHANAKYA_DATABASE_URL`.
+Phase 1 **CLI user config** still lives under the home directory (`~/.zeno/config.toml`); only the **default SQLite file** for Phase 3 is cwd-relative unless you override it with `ZENO_DATABASE_URL`.
 
 Override explicitly when you want a different file or path:
 
 ```bash
-export CHANAKYA_DATABASE_URL="sqlite+aiosqlite:////absolute/path/to/chanakya.db"
+export ZENO_DATABASE_URL="sqlite+aiosqlite:////absolute/path/to/zeno.db"
 ```
 
 ### Migrations (Alembic)
 
-From the **repository root** (where `alembic.ini` lives), after setting `CHANAKYA_DATABASE_URL` if you are not using the default:
+From the **repository root** (where `alembic.ini` lives), after setting `ZENO_DATABASE_URL` if you are not using the default:
 
 ```bash
 alembic upgrade head
 ```
 
-Revision scripts live under `chanakya/db/migrations/versions/`.
+Revision scripts live under `zeno/db/migrations/versions/`.
 
 Initial revision: **`b86554c1b399`** (full schema). Follow-up: **`f3d402b3bd47`** adds the **`agents`** table and refactors **`agent_assignments`** to reference **`agent_id`** (drops duplicated `agent_type` / `provider` / `mode` on assignments). That migration **deletes all rows in `agent_assignments`** before altering SQLite tables (no automatic backfill from old columns).
 
 ### Smoke test (repository + dependency logic)
 
-Uses a **temporary** SQLite file (does not use your default `./.chanakya/chanakya.db`):
+Uses a **temporary** SQLite file (does not use your default `./.zeno/zeno.db`):
 
 ```bash
-python -m chanakya.db.smoke_test
+python -m zeno.db.smoke_test
 ```
 
 ### Dependencies
@@ -112,43 +112,43 @@ Database-related runtime dependencies are declared in `pyproject.toml` (`sqlalch
 
 ## Phase 4 (agent memory layer)
 
-Phase 4 adds an embedded **ChromaDB** memory layer under `chanakya/memory/` that can persist and retrieve agent-authored context across sessions.
+Phase 4 adds an embedded **ChromaDB** memory layer under `zeno/memory/` that can persist and retrieve agent-authored context across sessions.
 
 ### Terminology
 
 | Term | Meaning |
 |------|---------|
-| **`wing`** | A per-project namespace, derived from the working directory name (slugified) and stored in SQLite (`wings` table). |
-| **`room`** | A lead-agent-defined topic area under a wing (e.g. `authentication`, `frontend`), stored in SQLite (`rooms` table). |
-| **`drawer`** | One semantic-searchable entry stored in ChromaDB (typically one per completed task). |
-| **`diary_entry`** | A structured briefing authored by an agent after task completion; stored as the drawer document. |
-| **`MemContext`** | Assembled context (session summary + relevant drawers + agent history) suitable for prompt injection. |
-| **`agent_id`** | The agent instance identifier stored in drawer metadata, used to scope history retrieval to a specific agent instance when desired. |
+| **`vault`** | A per-project namespace, derived from the working directory name (slugified) and stored in SQLite (`vaults` table). |
+| **`room`** | A lead-agent-defined topic area under a vault (e.g. `authentication`, `frontend`), stored in SQLite (`rooms` table). |
+| **`trace`** | One semantic-searchable entry stored in ChromaDB (typically one per completed task). |
+| **`log`** | A structured briefing authored by an agent after task completion; stored as the trace document. |
+| **`MemContext`** | Assembled context (session summary + relevant traces + agent logs) suitable for prompt injection. |
+| **`agent_id`** | The agent instance identifier stored in trace metadata, used to scope history retrieval to a specific agent instance when desired. |
 
 ### Persistence
 
-- **SQLite**: wings/rooms are stored in the relational DB.
+- **SQLite**: vaults/rooms are stored in the relational DB.
 - **ChromaDB**: embedded local persistence under:
-  - **`<cwd>/.chanakya/memory/chroma/`**
-- **Collections**: one collection per wing, named:
-  - **`chanakya_<wingSlug>`**
+  - **`<cwd>/.zeno/mind/chroma/`**
+- **Collections**: one collection per vault, named:
+  - **`zeno_<vaultSlug>`**
 
 ### Adapter contract changes
 
-`AgentResponse` now supports an optional `diary_entry` block. The Gemini adapter prompts agents to emit it and logs a warning if it is missing (missing diary entries are recoverable).
+`AgentResponse` now supports an optional `log` block. The Gemini adapter prompts agents to emit it and logs a warning if it is missing (missing logs are recoverable).
 
 ### Smoke test (memory)
 
-Runs against a temporary SQLite file and a temporary working directory; saves one drawer and verifies retrieval:
+Runs against a temporary SQLite file and a temporary working directory; saves one trace and verifies retrieval:
 
 ```bash
-python -m chanakya.memory.smoke_test
+python -m zeno.memory.smoke_test
 ```
 
 ### Retrieval notes
 
-- **`search_drawers(..., room=None)`**: `room` is optional and only applied as a filter when explicitly provided.
-- **`get_agent_history(...)`**: history can be scoped broadly (by `agent_type`) or narrowly (by `agent_id`), and always includes the `wing` filter.
+- **`search_traces(..., room=None)`**: `room` is optional and only applied as a filter when explicitly provided.
+- **`get_agent_logs(...)`**: history can be scoped broadly (by `agent_type`) or narrowly (by `agent_id`), and always includes the `vault` filter.
 
 ### Dependencies
 
@@ -160,7 +160,7 @@ Phase 5 formalizes the **lead agent request/response** contracts and adds a pers
 
 ### Contracts
 
-Defined in `chanakya/agents/models.py`:
+Defined in `zeno/agents/models.py`:
 
 - **Clarification flow**:
   - `ClarificationQuestion`
@@ -168,15 +168,15 @@ Defined in `chanakya/agents/models.py`:
 - **Execution planning**:
   - `RoomDefinition`
   - `TaskDefinition`
-  - `ExecutionPlanResponse` (`type="execution_plan"`, includes required `diary_entry`)
+  - `ExecutionPlanResponse` (`type="execution_plan"`, includes required `log`)
 - **Lead agent request**:
   - `LeadAgentRequest` (includes `memory_context` as a lightweight `AgentContext` mirror model; the orchestrator converts `MemContext → AgentContext`)
 - **Validation**:
-  - `validate_lead_response(...) -> list[str]` enforces discriminator correctness, dependency/room consistency, parallel group format, required diary entry, and rejects clarification responses in YOLO mode.
+  - `validate_lead_response(...) -> list[str]` enforces discriminator correctness, dependency/room consistency, parallel group format, required log, and rejects clarification responses in YOLO mode.
 
 ### Orchestrator state (persisted)
 
-- **Enum**: `chanakya/core/enums.py` defines `OrchestratorState` (shared primitive).
+- **Enum**: `zeno/core/enums.py` defines `OrchestratorState` (shared primitive).
 - **DB**: `sessions.orchestrator_state` is stored in SQLite with default `INITIALIZING`.
 - **Repository helpers**:
   - `update_orchestrator_state(session_id, state)`
@@ -185,12 +185,12 @@ Defined in `chanakya/agents/models.py`:
 ### Smoke test (contracts)
 
 ```bash
-./.venv/bin/python -m compileall -q chanakya
+./.venv/bin/python -m compileall -q zeno
 ```
 
 ## Phase 8A (lead agent foundation)
 
-Phase 8A introduces the lead agent prompt architecture and a unified lead response schema (clarification/execution/terminate), plus a persistent lead-agent subprocess adapter under `chanakya/agents/lead/`.
+Phase 8A introduces the lead agent prompt architecture and a unified lead response schema (clarification/execution/terminate), plus a persistent lead-agent subprocess adapter under `zeno/agents/lead/`.
 
 ## Phase 8B (lead agent ↔ orchestrator integration)
 
@@ -198,13 +198,13 @@ Phase 8B wires the lead agent into the orchestrator: the lead agent produces an 
 
 ## Phase 6 (bare orchestrator)
 
-Phase 6 introduces the first **end-to-end orchestrator** under `chanakya/orchestrator/`. It is intentionally minimal: one session, one task, one agent, one worktree, one merge.
+Phase 6 introduces the first **end-to-end orchestrator** under `zeno/orchestrator/`. It is intentionally minimal: one session, one task, one agent, one worktree, one merge.
 
 ### What it does
 
-- Initializes the session (creates `./.chanakya/`, ensures git, initializes the memory wing, creates SQLite session).
-- Creates a git worktree under `./.chanakya/worktrees/<session_id>/<task_id>` and a branch `chanakya/<session_id>/<task_id>`.
-- Dispatches a single “test agent” via the Gemini adaptor, saves metrics + artifacts to SQLite, and saves a memory drawer to ChromaDB.
+- Initializes the session (creates `./.zeno/`, ensures git, initializes the memory vault, creates SQLite session).
+- Creates a git worktree under `./.zeno/worktrees/<session_id>/<task_id>` and a branch `zeno/<session_id>/<task_id>`.
+- Dispatches a single “test agent” via the Gemini adaptor, saves metrics + artifacts to SQLite, and saves a memory trace to ChromaDB.
 - Merges the worktree branch back to the current branch, then cleans up the worktree and branch.
 - Marks the session as completed (or failed on first error).
 
@@ -213,7 +213,7 @@ Phase 6 introduces the first **end-to-end orchestrator** under `chanakya/orchest
 Run from the repository root, using the repo-local venv:
 
 ```bash
-./.venv/bin/python -m chanakya.orchestrator.smoke_phase6
+./.venv/bin/python -m zeno.orchestrator.smoke_phase6
 ```
 
 Optional settings:
@@ -222,12 +222,12 @@ Optional settings:
 
 ## Phase 7 (CLI and orchestrator)
 
-The `chanakya` command starts an **interactive** session: one long-lived `OrchestratorCore`, a new SQLite `DbSession` per task line you enter, slash commands (`/quit`, `/status`, `/help`), and Rich line-based progress. Default execution mode is HITL; pass `--yolo` for YOLO.
+The `zeno` command starts an **interactive** session: one long-lived `OrchestratorCore`, a new SQLite `DbSession` per task line you enter, slash commands (`/quit`, `/status`, `/help`), and Rich line-based progress. Default execution mode is HITL; pass `--yolo` for YOLO.
 
 ```bash
-chanakya
-chanakya --yolo
+zeno
+zeno --yolo
 ```
 
-The Phase 2 adaptor smoke hook remains: `chanakya test-adaptor`.
+The Phase 2 adaptor smoke hook remains: `zeno test-adaptor`.
 
