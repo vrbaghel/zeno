@@ -37,9 +37,15 @@ class AgentResponse(BaseModel):
 
 
 class WorkerResponse(BaseModel):
+    type: Literal["success"] = "success"
     summary: str
     artifacts: AgentArtifacts = Field(default_factory=AgentArtifacts)
     log: MemLog
+
+
+class WorkerTerminateResponse(BaseModel):
+    type: Literal["terminate"] = "terminate"
+    reason: str
 
 
 class WorkerMetrics(BaseModel):
@@ -139,11 +145,13 @@ WORKER_RESPONSE_SCHEMA: dict[str, Any] = {
                     "type": "object",
                     "properties": {
                         "summary": {"type": "string"},
-                        "decisions": {"type": "string"},
-                        "assumptions": {"type": "string"},
-                        "open_issues": {"type": "string"}
+                        "decisions": {"type": "array", "items": {"type": "string"}},
+                        "assumptions": {"type": "array", "items": {"type": "string"}},
+                        "dependencies": {"type": "array", "items": {"type": "string"}},
+                        "open_issues": {"type": "array", "items": {"type": "string"}},
+                        "room": {"type": "string"},
                     },
-                    "required": ["summary", "decisions", "assumptions", "open_issues"],
+                    "required": ["summary", "decisions", "assumptions", "open_issues", "room"]
                 }
             },
             "required": ["type", "summary", "artifacts", "log"],

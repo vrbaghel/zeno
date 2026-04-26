@@ -129,3 +129,32 @@ async def cleanup_worktree(
     if rc2 != 0:
         logger.warning("branch delete failed: %s", (out2 + "\n" + err2).strip())
 
+
+async def commit_worktree_changes(worktree_path: str, task_title: str) -> None:
+    """Stage and commit all changes in the worktree."""
+    root = str(Path(worktree_path).resolve())
+
+    rc, out, err = await _run_git(["status", "--porcelain"], cwd=root)
+    if rc != 0:
+        raise InitializationError(
+            "Failed to check worktree status",
+            detail=(out + "\n" + err).strip(),
+        )
+    if not out.strip():
+        return
+
+    rc2, out2, err2 = await _run_git(["add", "-A"], cwd=root)
+    if rc2 != 0:
+        raise InitializationError(
+            "Failed to stage worktree changes",
+            detail=(out2 + "\n" + err2).strip(),
+        )
+
+    msg = f"feat: {task_title}".strip()
+    rc3, out3, err3 = await _run_git(["commit", "-m", msg], cwd=root)
+    if rc3 != 0:
+        raise InitializationError(
+            "Failed to commit worktree changes",
+            detail=(out3 + "\n" + err3).strip(),
+        )
+

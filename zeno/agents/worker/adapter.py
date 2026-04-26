@@ -4,9 +4,16 @@ from datetime import datetime, timezone
 from typing import Any
 import traceback
 
-from zeno.agents.models import AgentContext, WorkerMetrics, WorkerResponse, WORKER_RESPONSE_SCHEMA
+from zeno.agents.models import (
+    AgentContext,
+    WorkerMetrics,
+    WorkerResponse,
+    WorkerTerminateResponse,
+    WORKER_RESPONSE_SCHEMA,
+)
 from zeno.agents.worker.composer import build_system_prompt
 from zeno.orchestrator.errors import ParseError
+from zeno.orchestrator.errors import WorkerTerminationError
 from zeno.orchestrator.errors import map_sdk_error  # added in Migration 3
 
 _SDK_IMPORT_ERROR: str | None = None
@@ -84,14 +91,23 @@ class WorkerAdapter:
 
                     if ResultMessage is not None and isinstance(msg, ResultMessage):
                         completed_at = _now()
-                        structured = getattr(msg, "structured_output", None)
-                        if not isinstance(structured, dict):
+                        output = getattr(msg, "structured_output", None)
+                        if isinstance(output, str):
+                            output = self._clean_output(output)
+                        if not isinstance(output, dict):
                             raise ParseError(
                                 "Worker structured_output is not an object",
-                                detail=repr(structured)[:500],
+                                detail=repr(output)[:500],
                             )
 
-                        response = WorkerResponse(**structured)
+                        response_type = output.get("type")
+                        if response_type == "terminate":
+                            term = WorkerTerminateResponse(**output)
+                            raise WorkerTerminationError(term.reason)
+                        if response_type == "success":
+                            response = WorkerResponse(**output)
+                        else:
+                            raise ParseError("Unknown worker response type", detail=str(response_type))
 
                         usage: dict[str, Any] = getattr(msg, "usage", None) or {}
                         input_tokens = usage.get("input_tokens")
@@ -137,4 +153,27 @@ class WorkerAdapter:
             raise map_sdk_error(e) from e
 
         raise ParseError("Worker did not produce a ResultMessage")
+
+    def _clean_output(self, output: str) -> dict[str, Any]:
+        """
+        Strip common markdown fences from structured output.
+        """
+        s = output.strip()
+        if s.startswith("```"):
+            # Drop opening fence (optionally ```json) and closing fence.
+            lines = s.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            s = "\n".join(lines).strip()
+        try:
+            import json
+
+            parsed = json.loads(s)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return {"type": "terminate", "reason": "Worker returned non-JSON structured output"}  # fallback
 

@@ -32,6 +32,7 @@ from zeno.orchestrator import git as git_ops
 from zeno.orchestrator.errors import (
     DispatchError,
     InitializationError,
+    WorkerTerminationError,
     StorageError,
     UnknownError,
     ValidationError,
@@ -453,7 +454,23 @@ class OrchestratorCore:
 
         # Dispatch worker in the worktree.
         self.worker_adapter.working_directory = worktree_path
-        response, metrics = await self.worker_adapter.dispatch(task=task, agent=agent, chroma_context=chroma_ctx)
+        try:
+            response, metrics = await self.worker_adapter.dispatch(
+                task=task, agent=agent, chroma_context=chroma_ctx
+            )
+        except WorkerTerminationError as e:
+            await self.db_repo.update_task_status(task.id, TaskStatus.failed)
+            await self.db_repo.complete_assignment(assignment.id)
+            await git_ops.cleanup_worktree(
+                self.working_directory,
+                worktree_path=worktree_path,
+                branch_name=branch_name,
+            )
+            await self.db_repo.clear_worktree(task.id)
+            raise DispatchError(
+                f"Worker agent could not complete task: {task.title}",
+                detail=str(e),
+            ) from e
 
         await self.db_repo.save_task_metrics(
             assignment_id=assignment.id,
@@ -467,6 +484,9 @@ class OrchestratorCore:
             session_id=self.current_session.id,
             artifacts=response.artifacts,
         )
+
+        # Stage and commit all agent changes before merge.
+        await git_ops.commit_worktree_changes(worktree_path=worktree_path, task_title=task.title)
 
         # Save worker trace
         from zeno.memory.models import MemTrace

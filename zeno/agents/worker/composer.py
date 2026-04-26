@@ -51,13 +51,17 @@ def build_system_prompt(
     # 5) Reporting guidance
     parts.append("## When you finish")
     parts.append(
-        "Report back with:\n"
+        "Report back with one of two response types:\n\n"
+        "If you completed the task successfully:\n"
+        "- type: success\n"
         "- A clear summary of what you did and why\n"
-        "- Every file you created, updated, or deleted — "
-        "be exhaustive, include files modified via bash commands\n"
-        "- A detailed log entry written as a briefing for the next agent "
-        "who will work on this project — include decisions made, "
-        "assumptions, and any unresolved issues they should know about"
+        "- Every file you created, updated, or deleted\n"
+        "- A detailed log entry for the next agent\n\n"
+        "If you cannot complete the task — file not found, "
+        "blocker encountered, task is impossible:\n"
+        "- type: terminate\n"
+        "- A clear reason explaining what went wrong and why\n"
+        "  you could not complete the task"
     )
 
     return "\n\n".join(parts).strip() + "\n"

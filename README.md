@@ -196,10 +196,16 @@ Phase 6 introduces the first **end-to-end orchestrator** under `zeno/orchestrato
 ### What it does
 
 - Initializes the session (creates `./.zeno/`, ensures git, initializes the memory vault, creates SQLite session).
+- Ensures the repo has at least one commit (creates an empty initial commit if needed) so worktree branches can merge back cleanly.
 - Creates a git worktree under `./.zeno/worktrees/<session_id>/<task_id>` and a branch `zeno/<session_id>/<task_id>`.
 - Dispatches a worker agent, saves metrics + artifacts to SQLite, and saves a memory trace to ChromaDB.
-- Merges the worktree branch back to the current branch, then cleans up the worktree and branch.
+- Stages + commits any worker changes inside the worktree, then merges the worktree branch back to the current branch, then cleans up the worktree and branch.
 - Marks the session as completed (or failed on first error).
+
+Worker responses support two outcomes via a `type` discriminator:
+
+- `type: success`: normal completion (summary, artifacts, log)
+- `type: terminate`: the worker could not complete the task; the orchestrator marks the task failed and cleans up the worktree.
 
 ### Smoke test (orchestrator)
 
