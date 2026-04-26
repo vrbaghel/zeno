@@ -143,6 +143,7 @@ class DbSession(Base):
     )
     working_directory: Mapped[str] = mapped_column(Text, nullable=False)
     raw_input: Mapped[str] = mapped_column(Text, nullable=False)
+    lead_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     execution_plans: Mapped[list[DbExecutionPlan]] = relationship(back_populates="session")
     tasks: Mapped[list[DbTask]] = relationship(
@@ -265,12 +266,6 @@ class DbAgent(Base):
         nullable=False,
     )
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    provider: Mapped[Provider] = mapped_column(
-        Enum(Provider, values_callable=_values, native_enum=False, length=32), nullable=False
-    )
-    mode: Mapped[AgentMode] = mapped_column(
-        Enum(AgentMode, values_callable=_values, native_enum=False, length=32), nullable=False
-    )
 
     assignments: Mapped[list["DbAgentAssignment"]] = relationship(back_populates="agent")
 

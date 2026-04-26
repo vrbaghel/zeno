@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import uuid
 
 from zeno.agents.models import ExecutionPlanResponse, validate_lead_response
-from zeno.db.models import AgentMode, AgentType, DbExecutionPlan, Provider, TaskType
+from zeno.db.models import AgentType, DbExecutionPlan, TaskType
 from zeno.memory.models import MemTrace
 from zeno.memory.store import save_trace
 from zeno.orchestrator.errors import StorageError, ValidationError
@@ -76,11 +76,6 @@ class ExecutionPlanner:
                     raise StorageError(f"Failed to add dependency {t.id} -> {dep_local}", detail=str(e)) from e
 
         # 7) Create agents (unique agent_type; provider is fixed for now)
-        #
-        # Migration 2 removes per-task provider selection; the lead agent plans without providers.
-        # The orchestrator wiring is out of scope for Migration 2, but this module should keep
-        # importing cleanly. We use a placeholder provider for DB compatibility.
-        placeholder_provider = Provider("anthropic")
         agent_id_by_key: dict[str, uuid.UUID] = {}
         for t in response.tasks:
             key = t.agent_type
@@ -88,7 +83,7 @@ class ExecutionPlanner:
                 continue
 
             # Stable name to avoid duplicates across runs.
-            agent_name = f"{placeholder_provider.value}-{t.agent_type}"
+            agent_name = f"{t.agent_type}-agent"
             try:
                 existing = await self.db_repo.get_agent_by_name(agent_name)
                 if existing is None:
@@ -96,8 +91,6 @@ class ExecutionPlanner:
                         name=agent_name,
                         agent_type=AgentType(t.agent_type),
                         system_prompt=_placeholder_system_prompt(t.agent_type),
-                        provider=placeholder_provider,
-                        mode=AgentMode.adapter,
                     )
                 agent_id_by_key[key] = existing.id
             except Exception as e:
@@ -138,8 +131,6 @@ class ExecutionPlanner:
                     name=lead_agent_name,
                     agent_type=AgentType.lead,
                     system_prompt=_placeholder_system_prompt("lead"),
-                    provider=placeholder_provider,
-                    mode=AgentMode.adapter,
                 )
 
             trace = MemTrace(

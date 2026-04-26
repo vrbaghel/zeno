@@ -90,6 +90,16 @@ async def print_checkpoint(console: Console, content: CheckpointContent) -> str:
         console.print("  [dim]Enter one of: " + ", ".join(sorted(key_by_letter.keys())) + ".[/dim]")
 
 
+async def print_revision_prompt(console: Console) -> str:
+    from zeno.cli.input import async_input
+
+    console.print("  ──────────────────────────────────")
+    console.print("  [bold]Revise plan[/bold]")
+    console.print("  What would you like to change?")
+    console.print()
+    return (await async_input("  > ")).strip()
+
+
 def print_progress_note(console: Console, message: str, *, ok: bool = False) -> None:
     _line(console, "", message, ok=ok)
 

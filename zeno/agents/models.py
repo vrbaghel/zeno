@@ -158,7 +158,7 @@ class LeadAgentRequest(BaseModel):
 
 
 class CheckpointOption(BaseModel):
-    key: Literal["approve", "revise", "cancel", "retry", "skip", "a", "b", "c"]
+    key: Literal["approve", "revise", "cancel", "retry", "skip", "a", "b", "c", "d"]
     label: str
 
 

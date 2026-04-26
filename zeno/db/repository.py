@@ -11,7 +11,6 @@ from zeno.agents.models import AgentArtifacts
 from zeno.agents.models import WorkerMetrics
 from zeno.db.engine import get_session_factory
 from zeno.db.models import (
-    AgentMode,
     AgentType,
     ArtifactOperation,
     AssignmentStatus,
@@ -29,7 +28,6 @@ from zeno.db.models import (
     DbRoom,
     DbVault,
     PlanStatus,
-    Provider,
     SessionStatus,
     TaskStatus,
     TaskType,
@@ -69,6 +67,7 @@ async def create_session(
             working_directory=working_directory,
             raw_input=raw_input,
             status=SessionStatus.active,
+            lead_session_id=None,
             created_at=_now(),
             updated_at=_now(),
         )
@@ -92,6 +91,17 @@ async def update_session_status(session_id: uuid.UUID, status: SessionStatus) ->
         if s is None:
             raise KeyError("session not found")
         s.status = status
+        s.updated_at = _now()
+        await db.commit()
+
+
+async def update_session_lead_session_id(session_id: uuid.UUID, lead_session_id: str) -> None:
+    factory = get_session_factory()
+    async with factory() as db:
+        s = await db.get(DbSession, session_id)
+        if s is None:
+            raise KeyError("session not found")
+        s.lead_session_id = lead_session_id
         s.updated_at = _now()
         await db.commit()
 
@@ -312,6 +322,28 @@ async def get_tasks_by_plan(plan_id: uuid.UUID) -> list[DbTask]:
         return list(r.scalars().all())
 
 
+async def get_completed_tasks(plan_id: uuid.UUID) -> list[DbTask]:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(
+            select(DbTask)
+            .where(DbTask.plan_id == plan_id, DbTask.status == TaskStatus.completed)
+            .order_by(DbTask.created_at.asc())
+        )
+        return list(r.scalars().all())
+
+
+async def update_task_status(task_id: uuid.UUID, status: TaskStatus) -> None:
+    factory = get_session_factory()
+    async with factory() as db:
+        t = await db.get(DbTask, task_id)
+        if t is None:
+            raise KeyError("task not found")
+        t.status = status
+        t.updated_at = _now()
+        await db.commit()
+
+
 async def get_pending_tasks(plan_id: uuid.UUID) -> list[DbTask]:
     factory = get_session_factory()
     async with factory() as db:
@@ -411,8 +443,6 @@ async def create_agent(
     name: str,
     agent_type: AgentType,
     system_prompt: str,
-    provider: Provider,
-    mode: AgentMode,  # noqa: A002
     *,
     agent_id: uuid.UUID | None = None,
 ) -> DbAgent:
@@ -423,8 +453,6 @@ async def create_agent(
             name=name,
             type=agent_type,
             system_prompt=system_prompt,
-            provider=provider,
-            mode=mode,
             created_at=_now(),
             updated_at=_now(),
         )
