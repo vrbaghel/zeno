@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import uuid
@@ -9,6 +10,8 @@ from zeno.db.models import AgentType, DbExecutionPlan, TaskType
 from zeno.memory.models import MemTrace
 from zeno.memory.store import save_trace
 from zeno.orchestrator.errors import StorageError, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,13 @@ class ExecutionPlanner:
         if errs:
             raise ValidationError("Lead agent response failed validation", detail="\n".join(errs))
 
+        logger.info(
+            "Building plan | session_id=%s tasks=%d rooms=%d",
+            session.id,
+            len(response.tasks),
+            len(response.rooms),
+        )
+
         # 2) Create plan
         try:
             plan = await self.db_repo.create_execution_plan(session.id)
@@ -41,6 +51,7 @@ class ExecutionPlanner:
             for r in response.rooms:
                 if not await self.db_repo.room_exists(vault.id, r.name):
                     await self.db_repo.create_room(vault_id=vault.id, name=r.name, description=r.description)
+                    logger.debug("Room created | name=%s", r.name)
         except Exception as e:
             raise StorageError("Failed to create rooms", detail=str(e)) from e
 
@@ -63,6 +74,13 @@ class ExecutionPlanner:
                 raise StorageError(f"Failed to create task {t.id}", detail=str(e)) from e
 
             created_task_uuid_by_local[t.id] = db_task.id
+            logger.debug(
+                "Task created | id=%s title=%s type=%s agent_type=%s",
+                t.id,
+                t.title,
+                t.type,
+                t.agent_type,
+            )
 
         # 6) Dependencies
         for t in response.tasks:
@@ -72,6 +90,7 @@ class ExecutionPlanner:
                         created_task_uuid_by_local[t.id],
                         created_task_uuid_by_local[dep_local],
                     )
+                    logger.debug("Task dependency | %s depends_on %s", t.id, dep_local)
                 except Exception as e:
                     raise StorageError(f"Failed to add dependency {t.id} -> {dep_local}", detail=str(e)) from e
 
@@ -113,6 +132,8 @@ class ExecutionPlanner:
             await self.db_repo.activate_plan(plan.id)
         except Exception as e:
             raise StorageError("Failed to activate plan", detail=str(e)) from e
+
+        logger.info("Plan built | plan_id=%s tasks=%d", plan.id, len(response.tasks))
 
         # 10) Save lead log to Chroma
         try:

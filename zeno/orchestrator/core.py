@@ -163,6 +163,7 @@ class OrchestratorCore:
                 detail=f"session_id={self.current_session.id}",
             )
 
+        logger.debug("State transition | %s -> %s | session_id=%s", old_state, new_state, self.current_session.id)
         await self.db_repo.update_orchestrator_state(self.current_session.id, new_state)
         cli_display.print_state_transition(self._rich_console, new_state)
 
@@ -183,6 +184,12 @@ class OrchestratorCore:
                 db_repo=self.db_repo,
             )
             self.current_session = session
+            logger.info(
+                "Session started | session_id=%s mode=%s wd=%s",
+                session.id,
+                self.execution_mode.value,
+                self.working_directory,
+            )
 
             st = await self.db_repo.get_orchestrator_state(session.id)
             cli_display.print_state_transition(self._rich_console, st)
@@ -195,6 +202,12 @@ class OrchestratorCore:
                 completed_tasks=None,
                 revision_reason=None,
             )
+            logger.info(
+                "Lead plan received | session_id=%s tasks=%d rooms=%d",
+                session.id,
+                len(getattr(lead_plan, "tasks", []) or []),
+                len(getattr(lead_plan, "rooms", []) or []),
+            )
 
             await self._transition(OrchestratorState.PLANNING)
 
@@ -204,6 +217,7 @@ class OrchestratorCore:
                 vault_name=self.vault_name,
             )
             plan = await planner.build_plan(lead_plan, session=session)
+            logger.info("Executing plan | session_id=%s plan_id=%s", session.id, plan.id)
 
             # Persist lead SDK session id for later resumption (revision).
             if self.lead_adapter and self.lead_adapter.session_id:
@@ -259,14 +273,17 @@ class OrchestratorCore:
                 elapsed_s=elapsed,
             )
             success = True
+            logger.info("Session complete | session_id=%s elapsed=%.1fs", session.id, elapsed)
 
         except ZenoError as e:
             sid = self.current_session.id if self.current_session else None
+            logger.error("Session failed | session_id=%s code=%s msg=%s", sid, e.code, e.message)
             await persist_session_failure(e, sid, self.db_repo)
             cli_display.print_error(self._rich_console, e)
         except Exception as e:
             err = UnknownError(str(e), detail=repr(e))
             sid = self.current_session.id if self.current_session else None
+            logger.error("Session failed | session_id=%s err=%s", sid, repr(e))
             await persist_session_failure(err, sid, self.db_repo)
             cli_display.print_error(self._rich_console, err)
         finally:
@@ -424,6 +441,11 @@ class OrchestratorCore:
             # Execute parallel groups stage-by-stage; within each stage dispatch concurrently,
             # then run a merge agent to integrate the group branches.
             for group_key, group_tasks in parallel_groups.items():
+                logger.info(
+                    "Parallel stage start | group=%s tasks=%d",
+                    group_key,
+                    len(group_tasks),
+                )
                 assert self.current_session is not None
                 # 1) Create worktrees concurrently
                 worktrees = await asyncio.gather(
@@ -434,6 +456,12 @@ class OrchestratorCore:
                 )
                 for t, (worktree_path, branch_name) in zip(group_tasks, worktrees, strict=False):
                     await self.db_repo.assign_worktree(t.id, worktree_path=worktree_path, branch_name=branch_name)
+                    logger.debug(
+                        "Worktree created | task_id=%s path=%s branch=%s",
+                        t.id,
+                        worktree_path,
+                        branch_name,
+                    )
 
                 # 2) Dispatch tasks concurrently (no per-task merge; merge happens in stage merge agent)
                 results = await asyncio.gather(
@@ -472,6 +500,7 @@ class OrchestratorCore:
                     ) from first
 
                 # 3) Merge stage via merge agent (real worker) and then clean up all group worktrees/branches.
+                logger.info("Parallel stage merge | group=%s branches=%d", group_key, len(worktrees))
                 await self._merge_parallel_stage(
                     plan=plan,
                     stage_key=group_key,
@@ -482,6 +511,7 @@ class OrchestratorCore:
                         self.working_directory, worktree_path=worktree_path, branch_name=branch_name
                     )
                     await self.db_repo.clear_worktree(t.id)
+                logger.info("Parallel stage complete | group=%s", group_key)
 
             # Execute sequential tasks one at a time (includes merge).
             for task in sequential:
@@ -501,6 +531,11 @@ class OrchestratorCore:
             raise InitializationError("Runtime not initialized")
 
         await self.db_repo.update_task_status(task.id, TaskStatus.running)
+        logger.info(
+            "Task started | task_id=%s title=%s",
+            task.id,
+            task.title,
+        )
         cli_display.print_task_activity(
             self._rich_console,
             task_title=task.title,
@@ -513,6 +548,7 @@ class OrchestratorCore:
                 self.working_directory, self.current_session.id, task.id
             )
             await self.db_repo.assign_worktree(task.id, worktree_path=worktree_path, branch_name=branch_name)
+            logger.debug("Worktree created | path=%s branch=%s task_id=%s", worktree_path, branch_name, task.id)
 
         # Use the planned assignment if present; otherwise fallback to creating one.
         assignment = await self.db_repo.get_assignment_for_task(task.id)
@@ -568,6 +604,14 @@ class OrchestratorCore:
                 f"Worker agent could not complete task: {task.title}",
                 detail=str(e),
             ) from e
+        logger.info(
+            "Task complete | task_id=%s title=%s tokens=%s cost=%s latency_ms=%s",
+            task.id,
+            task.title,
+            getattr(metrics, "total_tokens", None),
+            getattr(metrics, "cost_usd", None),
+            getattr(metrics, "latency_ms", None),
+        )
 
         await self.db_repo.save_task_metrics(
             assignment_id=assignment.id,
@@ -604,6 +648,7 @@ class OrchestratorCore:
 
         if merge_immediately:
             await self._transition(OrchestratorState.MERGING)
+            logger.info("Merging | branch=%s task_title=%s", branch_name, task.title)
             await git_ops.merge_worktree(
                 self.working_directory, branch_name=branch_name, task_title=task.title
             )
@@ -611,6 +656,7 @@ class OrchestratorCore:
                 self.working_directory, worktree_path=worktree_path, branch_name=branch_name
             )
             await self.db_repo.clear_worktree(task.id)
+            logger.debug("Worktree cleaned up | path=%s", worktree_path)
 
         cli_display.print_task_activity(
             self._rich_console,

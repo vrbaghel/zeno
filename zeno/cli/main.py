@@ -13,6 +13,7 @@ from zeno.agents.models import CheckpointContent
 from zeno.cli import display as cli_display
 from zeno.cli.input import SlashCommand, TaskInput, async_input, parse_input
 from zeno.core.enums import ExecutionMode, OrchestratorState
+from zeno.core.logging import setup_logging
 from zeno.orchestrator.core import OrchestratorCore
 from zeno.orchestrator.errors import ZenoError
 
@@ -23,6 +24,7 @@ app = typer.Typer(add_completion=False, no_args_is_help=False)
 def main(
     ctx: typer.Context,
     yolo: bool = typer.Option(False, "--yolo", help="YOLO execution mode (default is HITL)."),
+    debug: bool = typer.Option(False, "--debug", help="Enable verbose debug logging to console."),
     version: bool = typer.Option(
         False,
         "--version",
@@ -41,6 +43,9 @@ def main(
     console.print(f"[bold]Zeno[/bold] v{__version__}")
 
     execution_mode = ExecutionMode.YOLO if yolo else ExecutionMode.HITL
+
+    # Configure file/console logging early.
+    setup_logging(os.getcwd(), debug=debug)
     # Ensure Ctrl+C / termination signals exit immediately.
     def _terminate(_signum, _frame) -> None:  # type: ignore[no-untyped-def]
         raise KeyboardInterrupt

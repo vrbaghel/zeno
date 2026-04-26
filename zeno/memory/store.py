@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,8 @@ from uuid import UUID
 import chromadb
 
 from zeno.memory.models import MemLog, MemTrace
+
+logger = logging.getLogger(__name__)
 
 
 def _persist_dir(working_directory: str) -> Path:
@@ -82,6 +85,13 @@ def _trace_from_row(
 
 
 def save_trace(working_directory: str, trace: MemTrace, agent_id: str) -> None:
+    logger.debug(
+        "Saving trace | vault=%s room=%s agent_type=%s task_id=%s",
+        trace.vault,
+        trace.room,
+        trace.agent_type,
+        trace.task_id,
+    )
     col = _collection(working_directory, vault=trace.vault)
     md = trace.to_metadata()
     md["agent_id"] = agent_id
@@ -122,6 +132,7 @@ def search_traces(
     room: str | None = None,
     limit: int = 5,
 ) -> list[MemTrace]:
+    logger.debug("Searching traces | vault=%s room=%s limit=%d query=%r", vault, room, limit, query[:50])
     col = _collection(working_directory, vault=vault)
     where: dict[str, Any] = {"vault": vault}
     if room:
@@ -144,6 +155,9 @@ def search_traces(
                 metadata=mds[i] if i < len(mds) else None,
             )
         )
+    logger.debug("Trace search results | count=%d", len(out))
+    if query.strip() and not out:
+        logger.warning("ChromaDB search returned no results | vault=%s query=%r", vault, query[:50])
     return out
 
 

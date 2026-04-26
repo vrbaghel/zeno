@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+import logging
 import traceback
 
 from zeno.agents.models import (
@@ -15,6 +16,8 @@ from zeno.agents.worker.composer import build_system_prompt
 from zeno.orchestrator.errors import ParseError
 from zeno.orchestrator.errors import WorkerTerminationError
 from zeno.orchestrator.errors import map_sdk_error  # added in Migration 3
+
+logger = logging.getLogger(__name__)
 
 _SDK_IMPORT_ERROR: str | None = None
 
@@ -66,7 +69,14 @@ class WorkerAdapter:
             agent_type=agent_type,
             agent_responsibilities=agent_responsibilities,
             chroma_context=chroma_context,
+            working_directory=self.working_directory,
         )
+        logger.info(
+            "Worker dispatch started | agent_type=%s model=%s",
+            agent_type,
+            "claude-haiku-4-5-20251001",
+        )
+        logger.debug("Worker prompt length | chars=%d", len(system_prompt))
 
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
@@ -89,6 +99,7 @@ class WorkerAdapter:
                     if AssistantMessage is not None and isinstance(msg, AssistantMessage):
                         if first_token_at is None and getattr(msg, "content", None):
                             first_token_at = _now()
+                        logger.debug("Worker SDK message | type=%s", type(msg).__name__)
                         continue
 
                     if ResultMessage is not None and isinstance(msg, ResultMessage):
@@ -105,6 +116,7 @@ class WorkerAdapter:
                         response_type = output.get("type")
                         if response_type == "terminate":
                             term = WorkerTerminateResponse(**output)
+                            logger.warning("Worker terminated | reason=%s", term.reason)
                             raise WorkerTerminationError(term.reason)
                         if response_type == "success":
                             response = WorkerResponse(**output)
@@ -149,9 +161,17 @@ class WorkerAdapter:
                             num_turns=getattr(msg, "num_turns", None),
                         )
 
+                        logger.info(
+                            "Worker complete | tokens=%s cost=%s latency_ms=%s turns=%s",
+                            getattr(metrics, "total_tokens", None),
+                            getattr(metrics, "cost_usd", None),
+                            getattr(metrics, "latency_ms", None),
+                            getattr(metrics, "num_turns", None),
+                        )
                         return response, metrics
 
         except Exception as e:
+            logger.error("Worker dispatch failed | err=%s", repr(e))
             raise map_sdk_error(e) from e
 
         raise ParseError("Worker did not produce a ResultMessage")
