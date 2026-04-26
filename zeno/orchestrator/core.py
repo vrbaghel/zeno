@@ -53,6 +53,45 @@ from zeno.orchestrator.planner import ExecutionPlanner
 logger = logging.getLogger(__name__)
 
 
+def _merge_token_totals(current: int | None, add: int | None) -> int | None:
+    if add is None:
+        return current
+    if current is None:
+        return add
+    return current + add
+
+
+@dataclass
+class _TaskResult:
+    tokens_total: int | None
+    files_created: int
+    files_updated: int
+    files_deleted: int
+
+
+@dataclass
+class _SessionSummary:
+    task_count: int = 0
+    files_created: int = 0
+    files_updated: int = 0
+    files_deleted: int = 0
+    tokens_total: int | None = None
+
+    def add_task(self, r: _TaskResult) -> None:
+        self.task_count += 1
+        self.files_created += r.files_created
+        self.files_updated += r.files_updated
+        self.files_deleted += r.files_deleted
+        self.tokens_total = _merge_token_totals(self.tokens_total, r.tokens_total)
+
+    def merge(self, other: _SessionSummary) -> None:
+        self.task_count += other.task_count
+        self.files_created += other.files_created
+        self.files_updated += other.files_updated
+        self.files_deleted += other.files_deleted
+        self.tokens_total = _merge_token_totals(self.tokens_total, other.tokens_total)
+
+
 @dataclass(frozen=True)
 class _StateMachine:
     allowed: dict[OrchestratorState, set[OrchestratorState]]
@@ -223,26 +262,26 @@ class OrchestratorCore:
                 vault_name=self.vault_name,
             )
             task_id_map: dict[str, uuid.UUID] = {}
-            if not await self._execute_lazy_plan(
+            session_summary = await self._execute_lazy_plan(
                 raw_input=raw_input,
                 session=session,
                 planner=planner,
                 initial_chunk=lead_plan,
                 task_id_map=task_id_map,
-            ):
+            )
+            if session_summary is None:
                 return False
 
             await self._complete_session()
 
             elapsed = perf_counter() - t0
-            # Metrics aggregation is not implemented yet; keep prior behavior.
             cli_display.print_completion_summary(
                 self._rich_console,
-                task_count=1,
-                files_created=0,
-                files_updated=0,
-                files_deleted=0,
-                tokens_total=None,
+                task_count=session_summary.task_count,
+                files_created=session_summary.files_created,
+                files_updated=session_summary.files_updated,
+                files_deleted=session_summary.files_deleted,
+                tokens_total=session_summary.tokens_total,
                 elapsed_s=elapsed,
             )
             success = True
@@ -401,16 +440,17 @@ class OrchestratorCore:
         planner: ExecutionPlanner,
         initial_chunk: ExecutionPlanResponse,
         task_id_map: dict[str, uuid.UUID],
-    ) -> bool:
+    ) -> _SessionSummary | None:
         """
         Chunked planning loop: build/append each chunk, execute with checkpoint_before gates,
         prefetch next chunk in background when is_final is false.
-        Returns False if user aborted at a checkpoint.
+        Returns None if user aborted at a checkpoint.
         """
         chunk = initial_chunk
         chunk_num = 1
         prefetch: asyncio.Task[ExecutionPlanResponse] | None = None
         db_plan: DbExecutionPlan | None = None
+        combined = _SessionSummary()
 
         while True:
             await self._transition(OrchestratorState.PLANNING)
@@ -433,13 +473,14 @@ class OrchestratorCore:
                 await self.db_repo.update_session_lead_session_id(session.id, self.lead_adapter.session_id)
 
             await self._transition(OrchestratorState.EXECUTING)
-            prefetch = await self._execute_plan_chunk(
+            chunk_summary, prefetch = await self._execute_plan_chunk(
                 plan=db_plan,
                 raw_input=raw_input,
                 chunk_number=chunk_num,
                 is_final=chunk.is_final,
                 prefetch_task=prefetch,
             )
+            combined.merge(chunk_summary)
 
             if chunk.is_final:
                 break
@@ -456,7 +497,7 @@ class OrchestratorCore:
                         orchestrator_state=OrchestratorState.ABORTED,
                         db_repo=self.db_repo,
                     )
-                    return False
+                    return None
                 if choice == "b":
                     reason = await cli_display.print_revision_prompt(self._rich_console)
                     snap = await self._snapshot_plan_tasks(db_plan.id)
@@ -473,7 +514,7 @@ class OrchestratorCore:
             chunk_num += 1
             prefetch = None
 
-        return True
+        return combined
 
     async def _execute_plan_chunk(
         self,
@@ -483,7 +524,7 @@ class OrchestratorCore:
         chunk_number: int,
         is_final: bool,
         prefetch_task: asyncio.Task[ExecutionPlanResponse] | None,
-    ) -> asyncio.Task[ExecutionPlanResponse] | None:
+    ) -> tuple[_SessionSummary, asyncio.Task[ExecutionPlanResponse] | None]:
         out = prefetch_task
         if (
             not is_final
@@ -494,8 +535,8 @@ class OrchestratorCore:
             out = asyncio.create_task(self.lead_adapter.continue_plan(ctx))
             logger.info("Lazy prefetch started | chunk_number=%s plan_id=%s", chunk_number, plan.id)
 
-        await self._run_plan_execution_with_checkpoints(plan)
-        return out
+        summary = await self._run_plan_execution_with_checkpoints(plan)
+        return summary, out
 
     async def _chunk_boundary_checkpoint(self, next_chunk: ExecutionPlanResponse) -> str:
         if self.execution_mode == ExecutionMode.YOLO or self.hitl_callback is None:
@@ -587,14 +628,15 @@ class OrchestratorCore:
             raise DispatchError("User cancelled at task checkpoint", detail=titles)
         await self._transition(OrchestratorState.EXECUTING)
 
-    async def _run_plan_execution_with_checkpoints(self, plan: DbExecutionPlan) -> None:
+    async def _run_plan_execution_with_checkpoints(self, plan: DbExecutionPlan) -> _SessionSummary:
+        summary = _SessionSummary()
         while True:
             runnable = await self.db_repo.get_runnable_tasks(plan.id)
             if not runnable:
                 pending = await self.db_repo.get_pending_tasks(plan.id)
                 if pending:
                     raise UnknownError("Dependency deadlock: no runnable tasks but pending tasks exist")
-                return
+                return summary
 
             parallel_groups: dict[str, list[DbTask]] = {}
             sequential: list[DbTask] = []
@@ -662,6 +704,10 @@ class OrchestratorCore:
                         detail=f"{type(first).__name__}: {first}",
                     ) from first
 
+                for r in results:
+                    if isinstance(r, _TaskResult):
+                        summary.add_task(r)
+
                 logger.info("Parallel stage merge | group=%s branches=%d", group_key, len(worktrees))
                 await self._merge_parallel_stage(
                     plan=plan,
@@ -677,10 +723,10 @@ class OrchestratorCore:
 
             for task in sequential:
                 await self._fire_task_checkpoint([task])
-                await self._execute_task(plan=plan, task=task)
+                summary.add_task(await self._execute_task(plan=plan, task=task))
 
-    async def _execute_plan(self, plan: DbExecutionPlan) -> None:
-        await self._run_plan_execution_with_checkpoints(plan)
+    async def _execute_plan(self, plan: DbExecutionPlan) -> _SessionSummary:
+        return await self._run_plan_execution_with_checkpoints(plan)
 
     async def _execute_task(
         self,
@@ -690,7 +736,7 @@ class OrchestratorCore:
         worktree_path: str | None = None,
         branch_name: str | None = None,
         merge_immediately: bool = True,
-    ) -> None:
+    ) -> _TaskResult:
         assert self.current_session is not None
         if self._vault is None or self.worker_adapter is None:
             raise InitializationError("Runtime not initialized")
@@ -871,6 +917,13 @@ class OrchestratorCore:
         )
         if merge_immediately:
             await self._transition(OrchestratorState.EXECUTING)
+
+        return _TaskResult(
+            tokens_total=metrics.total_tokens,
+            files_created=len(response.artifacts.created),
+            files_updated=len(response.artifacts.updated),
+            files_deleted=len(response.artifacts.deleted),
+        )
 
     async def _merge_parallel_stage(self, *, plan: DbExecutionPlan, stage_key: str, branches: list[str]) -> None:
         """
@@ -1097,7 +1150,7 @@ class OrchestratorCore:
             raise InitializationError("No active execution plan for resumed session")
 
         await self._transition(OrchestratorState.EXECUTING)
-        await self._execute_plan(plan)
+        _ = await self._execute_plan(plan)
         await self._complete_session()
         self.current_session = None
 
