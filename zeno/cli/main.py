@@ -14,6 +14,7 @@ from zeno.cli import display as cli_display
 from zeno.cli.input import SlashCommand, TaskInput, async_input, parse_input
 from zeno.core.enums import ExecutionMode, OrchestratorState
 from zeno.core.logging import setup_logging
+from zeno.db.models import TaskStatus
 from zeno.orchestrator.core import OrchestratorCore
 from zeno.orchestrator.errors import ZenoError
 
@@ -99,6 +100,35 @@ async def _interactive_main(
     )
 
     try:
+        try:
+            resumable = await orchestrator.db_repo.get_resumable_sessions(cwd)
+            if resumable:
+                sess = resumable[0]
+                plan = await orchestrator.db_repo.get_active_plan(sess.id)
+                tasks = await orchestrator.db_repo.get_tasks_by_plan(plan.id) if plan else []
+                n_done = sum(1 for t in tasks if t.status == TaskStatus.completed)
+                n_total = len(tasks)
+                console.print(
+                    f"[yellow]Interrupted session[/yellow] [dim]{sess.id}[/dim] — "
+                    f"{n_done}/{n_total} tasks completed. [r]esume, [a]bandon, or [s]kip?"
+                )
+                choice_raw = await async_input("[r/a/s] ")
+                c = choice_raw.strip().lower()
+                if c in ("r", "resume"):
+                    try:
+                        await orchestrator.resume(sess)
+                        console.print("[green]Resumed session completed.[/green]")
+                    except ZenoError as e:
+                        cli_display.print_error(console, e)
+                elif c in ("a", "abandon"):
+                    try:
+                        await orchestrator.abandon_session(sess)
+                        console.print("Session abandoned.")
+                    except ZenoError as e:
+                        cli_display.print_error(console, e)
+        except ZenoError as e:
+            cli_display.print_error(console, e)
+
         while True:
             raw = await async_input("> ")
             parsed = parse_input(raw)

@@ -150,6 +150,39 @@ async def get_orchestrator_state(session_id: uuid.UUID) -> OrchestratorState:
         return s.orchestrator_state
 
 
+async def get_resumable_sessions(working_directory: str) -> list[DbSession]:
+    """
+    Sessions in this vault that can be resumed: active or aborted, with an active plan
+    and at least one non-terminal task or a lingering worktree pointer.
+    """
+    factory = get_session_factory()
+    async with factory() as db:
+        res = await db.execute(
+            select(DbSession)
+            .where(
+                DbSession.working_directory == working_directory,
+                DbSession.status.in_([SessionStatus.active, SessionStatus.aborted]),
+            )
+            .order_by(DbSession.updated_at.desc())
+        )
+        candidates = list(res.scalars().all())
+
+    out: list[DbSession] = []
+    for s in candidates:
+        plan = await get_active_plan(s.id)
+        if plan is None or plan.status != PlanStatus.active:
+            continue
+        tasks = await get_tasks_by_plan(plan.id)
+        if not tasks:
+            continue
+        if any(
+            t.status in (TaskStatus.pending, TaskStatus.running) or (t.worktree_path is not None)
+            for t in tasks
+        ):
+            out.append(s)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Plans
 # ---------------------------------------------------------------------------
@@ -580,6 +613,19 @@ async def complete_assignment(assignment_id: uuid.UUID) -> None:
             raise KeyError("assignment not found")
         a.completed_at = _now()
         a.status = AssignmentStatus.completed
+        await db.commit()
+
+
+async def reopen_assignment(assignment_id: uuid.UUID) -> None:
+    """Reset an assignment so the task can be dispatched again (e.g. after triage reset)."""
+    factory = get_session_factory()
+    async with factory() as db:
+        a = await db.get(DbAgentAssignment, assignment_id)
+        if a is None:
+            raise KeyError("assignment not found")
+        a.status = AssignmentStatus.assigned
+        a.started_at = None
+        a.completed_at = None
         await db.commit()
 
 

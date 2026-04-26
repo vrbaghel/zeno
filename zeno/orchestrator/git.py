@@ -138,6 +138,83 @@ async def cleanup_worktree(
     logger.debug("Worktree cleanup | path=%s branch=%s", worktree_path, branch_name)
 
 
+async def get_merge_target_branch(repo_root: str) -> str:
+    """
+    Branch in the main repo that worktrees fork from (current checkout, else main/master).
+    """
+    root = str(Path(repo_root).resolve())
+    rc, out, _ = await _run_git(["branch", "--show-current"], cwd=root)
+    if rc == 0 and out.strip():
+        return out.strip()
+    for candidate in ("main", "master"):
+        rc2, _, _ = await _run_git(["rev-parse", "--verify", candidate], cwd=root)
+        if rc2 == 0:
+            return candidate
+    return "main"
+
+
+async def branch_has_commits(worktree_path: str, repo_root: str) -> bool:
+    """True if HEAD on the worktree branch has commits not reachable from the merge target."""
+    wt = str(Path(worktree_path).resolve())
+    base = await get_merge_target_branch(repo_root)
+    rc, mb_out, _ = await _run_git(["merge-base", "HEAD", base], cwd=wt)
+    if rc != 0:
+        return False
+    mb = mb_out.strip()
+    if not mb:
+        return False
+    rc2, cnt_out, _ = await _run_git(["rev-list", "--count", f"{mb}..HEAD"], cwd=wt)
+    if rc2 != 0:
+        return False
+    try:
+        return int(cnt_out.strip() or "0") > 0
+    except ValueError:
+        return False
+
+
+async def get_diff_artifacts_merge_base_to_head(
+    worktree_path: str, repo_root: str
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Classify paths changed between merge-base(HEAD, main checkout) and HEAD as
+    created / updated / deleted (for persisting artifacts after resume).
+    """
+    wt = str(Path(worktree_path).resolve())
+    base = await get_merge_target_branch(repo_root)
+    rc, mb_out, _ = await _run_git(["merge-base", "HEAD", base], cwd=wt)
+    if rc != 0:
+        return [], [], []
+    mb = mb_out.strip()
+    rc2, diff_out, _ = await _run_git(["diff", "--name-status", f"{mb}..HEAD"], cwd=wt)
+    if rc2 != 0 or not diff_out.strip():
+        return [], [], []
+
+    created: list[str] = []
+    updated: list[str] = []
+    deleted: list[str] = []
+
+    for line in diff_out.splitlines():
+        parts = line.split("\t")
+        if not parts:
+            continue
+        status = parts[0]
+        if status.startswith("R") or status.startswith("C"):
+            # rename/copy: old -> new
+            if len(parts) >= 3:
+                deleted.append(parts[1])
+                created.append(parts[2])
+            continue
+        path = parts[-1].strip()
+        if status == "A":
+            created.append(path)
+        elif status == "D":
+            deleted.append(path)
+        elif status == "M":
+            updated.append(path)
+
+    return created, updated, deleted
+
+
 async def get_changed_files(worktree_path: str) -> tuple[list[str], list[str], list[str]]:
     """
     Return (created, updated, deleted) file lists by parsing `git status --porcelain`.

@@ -31,12 +31,12 @@ class InitializationError(ZenoError):
 
 class DispatchError(ZenoError):
     def __init__(self, message: str, *, detail: str | None = None) -> None:
-        super().__init__(code="DISPATCH_ERROR", message=message, detail=detail)
+        super().__init__(code="DISPATCH_ERROR", message=message, detail=detail, recoverable=True)
 
 
 class ParseError(ZenoError):
     def __init__(self, message: str, *, detail: str | None = None) -> None:
-        super().__init__(code="PARSE_ERROR", message=message, detail=detail)
+        super().__init__(code="PARSE_ERROR", message=message, detail=detail, recoverable=True)
 
 
 class ValidationError(ZenoError):
@@ -53,12 +53,12 @@ class WorkerTerminationError(ZenoError):
     """Raised when a worker agent cannot complete its task."""
 
     def __init__(self, message: str, *, detail: str | None = None) -> None:
-        super().__init__(code="WORKER_TERMINATED", message=message, detail=detail)
+        super().__init__(code="WORKER_TERMINATED", message=message, detail=detail, recoverable=True)
 
 
 class MergeError(ZenoError):
     def __init__(self, message: str, *, detail: str | None = None) -> None:
-        super().__init__(code="MERGE_ERROR", message=message, detail=detail)
+        super().__init__(code="MERGE_ERROR", message=message, detail=detail, recoverable=True)
 
 
 class StorageError(ZenoError):
@@ -68,7 +68,7 @@ class StorageError(ZenoError):
 
 class UnknownError(ZenoError):
     def __init__(self, message: str, *, detail: str | None = None) -> None:
-        super().__init__(code="UNKNOWN_ERROR", message=message, detail=detail)
+        super().__init__(code="UNKNOWN_ERROR", message=message, detail=detail, recoverable=True)
 
 
 def map_sdk_error(error: Exception) -> ZenoError:
@@ -102,20 +102,27 @@ async def persist_session_failure(
     session_id: UUID | None,
     db_repo: Any,
 ) -> None:
-    """Mark session and orchestrator state failed (best-effort). Does not exit."""
+    """Mark session and orchestrator state aborted (recoverable) or failed (best-effort). Does not exit."""
     if error.detail:
         logger.error("Zeno error detail: %s", error.detail)
     logger.error("Zeno session failure (%s): %s", error.code, error.message)
 
     if session_id is not None:
+        if error.recoverable:
+            target_status = SessionStatus.aborted
+            target_state = OrchestratorState.ABORTED
+        else:
+            target_status = SessionStatus.failed
+            target_state = OrchestratorState.FAILED
+
         try:
-            await db_repo.update_session_status(session_id, SessionStatus.failed)
+            await db_repo.update_session_status(session_id, target_status)
         except Exception as e:
-            logger.error("Failed to set session status=failed: %s", str(e))
+            logger.error("Failed to set session status=%s: %s", target_status.value, str(e))
         try:
-            await db_repo.update_orchestrator_state(session_id, OrchestratorState.FAILED)
+            await db_repo.update_orchestrator_state(session_id, target_state)
         except Exception as e:
-            logger.error("Failed to set orchestrator_state=FAILED: %s", str(e))
+            logger.error("Failed to set orchestrator_state=%s: %s", target_state.value, str(e))
 
 
 async def terminate(
@@ -127,7 +134,7 @@ async def terminate(
     Phase 6: fail-fast termination.
 
     - Log technical detail
-    - Mark session FAILED and orchestrator_state FAILED (best-effort)
+    - Mark session aborted or failed (via recoverable flag) and orchestrator_state (best-effort)
     - Print a clean user-facing error message
     - Exit non-zero
     """

@@ -29,8 +29,8 @@ from zeno.cli import display as cli_display
 from zeno.core.enums import ExecutionMode, OrchestratorState
 from zeno.db import repository as db_repository
 from zeno.db.engine import dispose_db_engine
-from zeno.db.models import AgentType, DbExecutionPlan, DbSession, DbTask, SessionStatus, TaskStatus
-from zeno.memory.models import MemLog, MemVault
+from zeno.db.models import AgentType, DbExecutionPlan, DbSession, DbTask, PlanStatus, SessionStatus, TaskStatus
+from zeno.memory.models import MemLog, MemTrace, MemVault
 from zeno.memory.mind import initialize_vault as initialize_mem_vault
 from zeno.memory.retrieval import build_context
 from zeno.memory.store import save_trace
@@ -109,7 +109,9 @@ class _StateMachine:
                 },
                 OrchestratorState.COMPLETED: set(),
                 OrchestratorState.FAILED: set(),
-                OrchestratorState.ABORTED: set(),
+                OrchestratorState.ABORTED: {
+                    OrchestratorState.EXECUTING,
+                },
             }
         )
 
@@ -677,8 +679,6 @@ class OrchestratorCore:
         await git_ops.commit_worktree_changes(worktree_path=worktree_path, task_title=task.title)
 
         # Save worker trace
-        from zeno.memory.models import MemTrace
-
         trace = MemTrace(
             vault=self.vault_name,
             room=str(getattr(task, "room", "default") or "default"),
@@ -775,6 +775,206 @@ class OrchestratorCore:
             self.working_directory, worktree_path=merge_worktree_path, branch_name=merge_branch_name
         )
 
+    async def _finalize_lingering_worktree(self, task: DbTask) -> None:
+        """Merge and remove a worktree left on a task already marked completed (e.g. parallel pre-merge)."""
+        if not task.worktree_path or not task.branch_name:
+            return
+        if not Path(task.worktree_path).exists():
+            await self.db_repo.clear_worktree(task.id)
+            return
+        try:
+            await git_ops.merge_worktree(self.working_directory, task.branch_name, task.title)
+        except Exception as e:
+            logger.warning("Lingering worktree merge skipped | task_id=%s err=%s", task.id, e)
+        try:
+            await git_ops.cleanup_worktree(
+                self.working_directory,
+                worktree_path=task.worktree_path,
+                branch_name=task.branch_name,
+            )
+        except Exception as e:
+            logger.warning("Lingering worktree cleanup failed | task_id=%s err=%s", task.id, e)
+        await self.db_repo.clear_worktree(task.id)
+
+    async def _triage_running_task(self, *, task: DbTask) -> None:
+        assert self.current_session is not None
+        assignment = await self.db_repo.get_assignment_for_task(task.id)
+        if assignment is None:
+            await self.db_repo.update_task_status(task.id, TaskStatus.pending)
+            await self.db_repo.clear_worktree(task.id)
+            return
+
+        agent = await self.db_repo.get_agent(assignment.agent_id)
+        worktree_path = task.worktree_path
+        branch_name = task.branch_name
+
+        if not worktree_path or not branch_name or not Path(worktree_path).exists():
+            await self.db_repo.update_task_status(task.id, TaskStatus.pending)
+            await self.db_repo.clear_worktree(task.id)
+            await self.db_repo.reopen_assignment(assignment.id)
+            return
+
+        try:
+            await git_ops.commit_worktree_changes(worktree_path, task.title)
+        except Exception as e:
+            logger.warning("Triage commit | task_id=%s err=%s", task.id, e)
+
+        has_commits = await git_ops.branch_has_commits(worktree_path, self.working_directory)
+        if not has_commits:
+            try:
+                await git_ops.cleanup_worktree(
+                    self.working_directory,
+                    worktree_path=worktree_path,
+                    branch_name=branch_name,
+                )
+            except Exception as e:
+                logger.warning("Triage cleanup | task_id=%s err=%s", task.id, e)
+            await self.db_repo.clear_worktree(task.id)
+            await self.db_repo.update_task_status(task.id, TaskStatus.pending)
+            await self.db_repo.reopen_assignment(assignment.id)
+            return
+
+        created, updated, deleted = await git_ops.get_diff_artifacts_merge_base_to_head(
+            worktree_path, self.working_directory
+        )
+        if not (created or updated or deleted):
+            created, updated, deleted = await git_ops.get_changed_files(worktree_path)
+
+        summary = f"[recovered] {task.title}: session interrupted; merged from saved branch"
+        response = WorkerResponse(
+            type="success",
+            summary=summary,
+            artifacts=AgentArtifacts(
+                created=created,
+                updated=updated,
+                deleted=deleted,
+            ),
+            log=MemLog(
+                summary="Task completed from git state after session resume.",
+                decisions=[],
+                assumptions=[],
+                open_issues=[],
+                room="default",
+            ),
+        )
+        now = datetime.now(timezone.utc)
+        metrics = WorkerMetrics(queued_at=now, completed_at=now, latency_ms=0)
+
+        await self.db_repo.save_task_metrics(
+            assignment_id=assignment.id,
+            task_id=task.id,
+            session_id=self.current_session.id,
+            metrics=metrics,
+        )
+        await self.db_repo.save_artifacts(
+            assignment_id=assignment.id,
+            task_id=task.id,
+            session_id=self.current_session.id,
+            artifacts=response.artifacts,
+        )
+
+        trace = MemTrace(
+            vault=self.vault_name,
+            room="default",
+            session_id=self.current_session.id,
+            task_id=task.id,
+            agent_type=str(getattr(task, "agent_type", "coding")),
+            agent_id=str(agent.id),
+            content=response.log,
+        )
+        save_trace(self.working_directory, trace, agent_id=str(agent.id))
+
+        await self.db_repo.complete_assignment(assignment.id)
+        await self.db_repo.complete_task(task.id, response.summary)
+
+        await self._transition(OrchestratorState.MERGING)
+        logger.info("Resume triage merge | branch=%s task_title=%s", branch_name, task.title)
+        await git_ops.merge_worktree(self.working_directory, branch_name=branch_name, task_title=task.title)
+        await git_ops.cleanup_worktree(
+            self.working_directory,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+        )
+        await self.db_repo.clear_worktree(task.id)
+        await self._transition(OrchestratorState.EXECUTING)
+
+    async def _triage_interrupted_tasks(self, session_id: UUID) -> None:
+        plan = await self.db_repo.get_active_plan(session_id)
+        if plan is None:
+            return
+        tasks = await self.db_repo.get_tasks_by_plan(plan.id)
+        for task in tasks:
+            if task.status == TaskStatus.running:
+                await self._triage_running_task(task=task)
+        for task in tasks:
+            if task.status == TaskStatus.completed and task.worktree_path:
+                await self._finalize_lingering_worktree(task)
+
+    async def resume(self, session: DbSession) -> None:
+        """
+        Continue an interrupted session: reconcile running tasks from git, then run remaining plan.
+        Skips lead replanning; restores lead SDK session id for future revise() calls.
+        """
+        if self._vault is None:
+            raise InitializationError("Call initialize_runtime() before resume()")
+        if self.worker_adapter is None:
+            raise InitializationError("Worker adapter not initialized")
+
+        self.current_session = session
+        await self.db_repo.update_session_status(session.id, SessionStatus.active)
+
+        if self.lead_adapter is None:
+            self.lead_adapter = LeadAgentAdapter(
+                execution_mode=self.execution_mode,
+                working_directory=self.working_directory,
+                hitl_callback=self._lead_hitl_callback if self.execution_mode == ExecutionMode.HITL else None,
+            )
+        if session.lead_session_id:
+            self.lead_adapter._session_id = session.lead_session_id
+
+        await self._triage_interrupted_tasks(session.id)
+
+        plan = await self.db_repo.get_active_plan(session.id)
+        if plan is None or plan.status != PlanStatus.active:
+            raise InitializationError("No active execution plan for resumed session")
+
+        await self._transition(OrchestratorState.EXECUTING)
+        await self._execute_plan(plan)
+        await self._complete_session()
+        self.current_session = None
+
+    async def abandon_session(self, session: DbSession) -> None:
+        """Discard resumable work: remove worktrees/branches and mark the session aborted."""
+        sid = session.id
+        try:
+            tasks = await self.db_repo.get_tasks_with_worktrees(sid)
+            for t in tasks:
+                if t.worktree_path and t.branch_name:
+                    try:
+                        await git_ops.cleanup_worktree(
+                            self.working_directory,
+                            worktree_path=t.worktree_path,
+                            branch_name=t.branch_name,
+                        )
+                    except Exception as e:
+                        logger.warning("abandon worktree cleanup | task_id=%s err=%s", t.id, e)
+                await self.db_repo.clear_worktree(t.id)
+        except Exception as e:
+            logger.warning("abandon worktree pass failed: %s", e)
+
+        plan = await self.db_repo.get_active_plan(sid)
+        if plan is not None:
+            for t in await self.db_repo.get_tasks_by_plan(plan.id):
+                if t.status in (TaskStatus.pending, TaskStatus.running):
+                    await self.db_repo.update_task_status(t.id, TaskStatus.cancelled)
+
+        await teardown_session(
+            sid,
+            status=SessionStatus.aborted,
+            orchestrator_state=OrchestratorState.ABORTED,
+            db_repo=self.db_repo,
+        )
+
     async def _complete_session(self) -> None:
         assert self.current_session is not None
         await self._transition(OrchestratorState.COMPLETED)
@@ -792,13 +992,16 @@ class OrchestratorCore:
                 tasks = await self.db_repo.get_tasks_with_worktrees(sid)
                 for t in tasks:
                     if t.worktree_path and t.branch_name:
-                        await git_ops.cleanup_worktree(
-                            self.working_directory,
-                            worktree_path=t.worktree_path,
-                            branch_name=t.branch_name,
-                        )
+                        try:
+                            await git_ops.commit_worktree_changes(t.worktree_path, t.title)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to commit worktree on teardown | task_id=%s err=%s",
+                                t.id,
+                                e,
+                            )
             except Exception as e:
-                logger.warning("worktree cleanup during teardown: %s", str(e))
+                logger.warning("worktree preservation during teardown: %s", str(e))
             try:
                 await teardown_session(
                     sid,
