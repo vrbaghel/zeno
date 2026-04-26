@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 import uuid
@@ -13,12 +14,15 @@ from rich.console import Console
 
 from zeno.agents.lead.adapter import LeadAgentAdapter, LeadAgentContext
 from zeno.agents.models import (
+    AgentArtifacts,
     AgentContext,
     CheckpointContent,
     CheckpointOption,
     ClarificationAnswer,
     ClarificationQuestion,
     ExecutionPlanResponse,
+    WorkerMetrics,
+    WorkerResponse,
 )
 from zeno.agents.worker.adapter import WorkerAdapter
 from zeno.cli import display as cli_display
@@ -26,7 +30,7 @@ from zeno.core.enums import ExecutionMode, OrchestratorState
 from zeno.db import repository as db_repository
 from zeno.db.engine import dispose_db_engine
 from zeno.db.models import AgentType, DbExecutionPlan, DbSession, DbTask, SessionStatus, TaskStatus
-from zeno.memory.models import MemVault
+from zeno.memory.models import MemLog, MemVault
 from zeno.memory.mind import initialize_vault as initialize_mem_vault
 from zeno.memory.retrieval import build_context
 from zeno.memory.store import save_trace
@@ -34,6 +38,7 @@ from zeno.orchestrator import git as git_ops
 from zeno.orchestrator.errors import (
     DispatchError,
     InitializationError,
+    ParseError,
     WorkerTerminationError,
     StorageError,
     UnknownError,
@@ -587,6 +592,7 @@ class OrchestratorCore:
 
         # Dispatch worker in the worktree.
         self.worker_adapter.working_directory = worktree_path
+        _dispatch_queued_at = datetime.now(timezone.utc)
         try:
             response, metrics = await self.worker_adapter.dispatch(
                 task=task, agent=agent, chroma_context=chroma_ctx
@@ -604,6 +610,47 @@ class OrchestratorCore:
                 f"Worker agent could not complete task: {task.title}",
                 detail=str(e),
             ) from e
+        except ParseError as e:
+            # The worker completed its file work but could not produce valid structured
+            # output even after reconciliation retries. Recover artifacts from git status
+            # so the task can still commit, merge, and feed into downstream tasks.
+            logger.warning(
+                "Worker parse failed after reconciliation — recovering from worktree | "
+                "task_id=%s title=%s err=%s",
+                task.id,
+                task.title,
+                e,
+            )
+            _recovered_at = datetime.now(timezone.utc)
+            _latency_ms = int((_recovered_at - _dispatch_queued_at).total_seconds() * 1000)
+            created, updated, deleted = await git_ops.get_changed_files(worktree_path)
+            response = WorkerResponse(
+                type="success",
+                summary=(
+                    f"[recovered] {task.title}: structured output failed after retries, "
+                    "artifacts recovered from git status"
+                ),
+                artifacts=AgentArtifacts(
+                    created=created,
+                    updated=updated,
+                    deleted=deleted,
+                ),
+                log=MemLog(
+                    summary=(
+                        f"Recovered from ParseError. Original error: {e.message}. "
+                        f"Detail: {e.detail or '(none)'}"
+                    ),
+                    decisions=[],
+                    assumptions=[],
+                    open_issues=[str(e.detail or e.message)],
+                    room=str(getattr(task, "room", "default") or "default"),
+                ),
+            )
+            metrics = WorkerMetrics(
+                queued_at=_dispatch_queued_at,
+                completed_at=_recovered_at,
+                latency_ms=_latency_ms,
+            )
         logger.info(
             "Task complete | task_id=%s title=%s tokens=%s cost=%s latency_ms=%s",
             task.id,

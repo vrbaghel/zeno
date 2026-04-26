@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+import asyncio
+import json
 import logging
 import traceback
+from datetime import datetime, timezone
+from typing import Any
 
 from zeno.agents.models import (
     AgentContext,
@@ -15,6 +17,7 @@ from zeno.agents.models import (
 from zeno.agents.worker.composer import build_system_prompt
 from zeno.orchestrator.errors import ParseError
 from zeno.orchestrator.errors import WorkerTerminationError
+from zeno.orchestrator.errors import ZenoError
 from zeno.orchestrator.errors import map_sdk_error  # added in Migration 3
 
 logger = logging.getLogger(__name__)
@@ -35,9 +38,27 @@ except Exception as e:  # pragma: no cover
     ClaudeSDKClient = None  # type: ignore[assignment]
     AssistantMessage = ResultMessage = None  # type: ignore[assignment]
 
+_RECONCILE_MAX_ATTEMPTS = 2
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _git_status_porcelain(worktree_path: str) -> str:
+    """Return raw `git status --porcelain` output for the worktree, empty string on failure."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "status", "--porcelain",
+            cwd=worktree_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out_b, _ = await proc.communicate()
+        return (out_b or b"").decode("utf-8", errors="replace").strip()
+    except Exception as exc:
+        logger.warning("git status failed during reconciliation | err=%s", exc)
+        return ""
 
 
 class WorkerAdapter:
@@ -53,6 +74,9 @@ class WorkerAdapter:
         - task.description
         - task.agent_type
         - task.agent_responsibilities
+
+        On ParseError (bad structured_output), attempts up to _RECONCILE_MAX_ATTEMPTS
+        cheap reconciliation calls before re-raising.
         """
         if ClaudeSDKClient is None or ClaudeAgentOptions is None:
             raise map_sdk_error(
@@ -90,6 +114,7 @@ class WorkerAdapter:
 
         queued_at = _now()
         first_token_at: datetime | None = None
+        last_parse_error: ParseError | None = None
 
         try:
             async with ClaudeSDKClient(options=options) as client:
@@ -107,21 +132,43 @@ class WorkerAdapter:
                         output = getattr(msg, "structured_output", None)
                         if isinstance(output, str):
                             output = self._clean_output(output)
+
+                        # --- try to parse; on failure, attempt reconciliation ---
+                        parse_err: ParseError | None = None
                         if not isinstance(output, dict):
-                            raise ParseError(
+                            parse_err = ParseError(
                                 "Worker structured_output is not an object",
                                 detail=repr(output)[:500],
                             )
-
-                        response_type = output.get("type")
-                        if response_type == "terminate":
-                            term = WorkerTerminateResponse(**output)
-                            logger.warning("Worker terminated | reason=%s", term.reason)
-                            raise WorkerTerminationError(term.reason)
-                        if response_type == "success":
-                            response = WorkerResponse(**output)
                         else:
-                            raise ParseError("Unknown worker response type", detail=str(response_type))
+                            response_type = output.get("type")
+                            if response_type == "terminate":
+                                term = WorkerTerminateResponse(**output)
+                                logger.warning("Worker terminated | reason=%s", term.reason)
+                                raise WorkerTerminationError(term.reason)
+                            if response_type != "success":
+                                parse_err = ParseError(
+                                    "Unknown worker response type", detail=str(response_type)
+                                )
+
+                        if parse_err is not None:
+                            logger.warning(
+                                "Worker bad structured_output | err=%s — attempting reconciliation",
+                                parse_err,
+                            )
+                            task_description = str(getattr(task, "description", "") or "")
+                            task_title = str(getattr(task, "title", task_description[:60]) or "")
+                            reconciled = await self._reconcile_output(
+                                task_description=task_description,
+                                task_title=task_title,
+                            )
+                            if reconciled is not None:
+                                response = reconciled
+                            else:
+                                last_parse_error = parse_err
+                                raise parse_err
+                        else:
+                            response = WorkerResponse(**output)  # type: ignore[arg-type]
 
                         usage: dict[str, Any] = getattr(msg, "usage", None) or {}
                         input_tokens = usage.get("input_tokens")
@@ -172,9 +219,102 @@ class WorkerAdapter:
 
         except Exception as e:
             logger.error("Worker dispatch failed | err=%s", repr(e))
+            if isinstance(e, ZenoError):
+                raise
             raise map_sdk_error(e) from e
 
         raise ParseError("Worker did not produce a ResultMessage")
+
+    async def _reconcile_output(
+        self,
+        *,
+        task_description: str,
+        task_title: str,
+    ) -> WorkerResponse | None:
+        """
+        Attempt to recover a valid WorkerResponse when the main dispatch produced
+        bad structured_output.
+
+        Runs up to _RECONCILE_MAX_ATTEMPTS no-tools, single-turn calls that show
+        the model the git status of the worktree and ask it to emit only the JSON
+        summary of what it just did.
+
+        Returns a WorkerResponse on success, or None if all attempts fail.
+        """
+        if ClaudeSDKClient is None or ClaudeAgentOptions is None:
+            return None
+
+        git_status = await _git_status_porcelain(self.working_directory)
+        files_context = (
+            f"Files changed in the working directory (git status --porcelain):\n{git_status}"
+            if git_status
+            else "No file changes detected in the working directory."
+        )
+
+        reconcile_prompt = (
+            "You previously ran as a worker agent and completed the following task:\n\n"
+            f"Task: {task_description}\n\n"
+            f"{files_context}\n\n"
+            "Your failed before returning a valid response. Please now produce ONLY the structured "
+            "output for the work you completed. Do not perform any more file operations. "
+        )
+
+        for attempt in range(1, _RECONCILE_MAX_ATTEMPTS + 1):
+            logger.info(
+                "Reconciliation attempt %d/%d | worktree=%s",
+                attempt,
+                _RECONCILE_MAX_ATTEMPTS,
+                self.working_directory,
+            )
+            try:
+                options = ClaudeAgentOptions(
+                    system_prompt=(
+                        "You are a worker agent that completed a task. "
+                        "Your only job now is to emit a valid response "
+                        "describing what you did"
+                    ),
+                    allowed_tools=[],
+                    permission_mode="acceptEdits",
+                    model="claude-haiku-4-5-20251001",
+                    max_turns=1,
+                    output_format=WORKER_RESPONSE_SCHEMA,
+                    cwd=self.working_directory,
+                )
+                async with ClaudeSDKClient(options=options) as client:
+                    await client.query(reconcile_prompt)
+                    async for msg in client.receive_response():
+                        if ResultMessage is not None and isinstance(msg, ResultMessage):
+                            output = getattr(msg, "structured_output", None)
+                            if isinstance(output, str):
+                                output = self._clean_output(output)
+                            if not isinstance(output, dict):
+                                logger.warning("Reconciliation attempt %d: non-dict output", attempt)
+                                break
+                            response_type = output.get("type")
+                            if response_type == "success":
+                                response = WorkerResponse(**output)
+                                logger.info("Reconciliation succeeded on attempt %d", attempt)
+                                return response
+                            if response_type == "terminate":
+                                logger.warning(
+                                    "Reconciliation attempt %d: agent returned terminate | reason=%s",
+                                    attempt,
+                                    output.get("reason"),
+                                )
+                                break
+                            logger.warning(
+                                "Reconciliation attempt %d: unknown type=%s", attempt, response_type
+                            )
+                            break
+            except Exception as exc:
+                logger.warning("Reconciliation attempt %d failed | err=%s", attempt, repr(exc))
+
+        logger.error(
+            "Reconciliation exhausted %d attempts — giving up | worktree=%s",
+            _RECONCILE_MAX_ATTEMPTS,
+            self.working_directory,
+        )
+        return None
 
     def _clean_output(self, output: str) -> dict[str, Any]:
         """
@@ -190,12 +330,9 @@ class WorkerAdapter:
                 lines = lines[:-1]
             s = "\n".join(lines).strip()
         try:
-            import json
-
             parsed = json.loads(s)
             if isinstance(parsed, dict):
                 return parsed
         except Exception:
             pass
         return {"type": "terminate", "reason": "Worker returned non-JSON structured output"}  # fallback
-

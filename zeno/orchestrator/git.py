@@ -138,6 +138,44 @@ async def cleanup_worktree(
     logger.debug("Worktree cleanup | path=%s branch=%s", worktree_path, branch_name)
 
 
+async def get_changed_files(worktree_path: str) -> tuple[list[str], list[str], list[str]]:
+    """
+    Return (created, updated, deleted) file lists by parsing `git status --porcelain`.
+
+    Called as a fallback when the worker's structured_output could not be reconciled,
+    so the orchestrator can still record which artifacts exist on disk.
+    """
+    root = str(Path(worktree_path).resolve())
+    rc, out, _ = await _run_git(["status", "--porcelain"], cwd=root)
+    if rc != 0 or not out.strip():
+        return [], [], []
+
+    created: list[str] = []
+    updated: list[str] = []
+    deleted: list[str] = []
+
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        xy = line[:2]
+        path = line[3:].strip()
+        # Handle renames: "old -> new" format
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        x, y = xy[0], xy[1]
+        # Untracked files (not staged at all)
+        if xy == "??":
+            created.append(path)
+        elif x == "D" or y == "D":
+            deleted.append(path)
+        elif x == "A" or y == "A":
+            created.append(path)
+        else:
+            updated.append(path)
+
+    return created, updated, deleted
+
+
 async def commit_worktree_changes(worktree_path: str, task_title: str) -> None:
     """Stage and commit all changes in the worktree."""
     root = str(Path(worktree_path).resolve())
