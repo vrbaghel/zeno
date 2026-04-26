@@ -43,21 +43,44 @@ def _render_agent_context_block(context) -> str:
     return "\n".join(parts).strip() + "\n"
 
 
-def compose_prompt(mode: ExecutionMode, stage: LeadAgentStage, context) -> str:
+def compose_system_prompt(mode: ExecutionMode) -> str:
+    """Static standing instructions only (sent on first SDK session / when forced)."""
     layer_files: list[str] = [
         "identity.md",
         "response_format.md",
         "planning_rules.md",
         "mode_hitl.md" if mode == ExecutionMode.HITL else "mode_yolo.md",
-        "stage_initial.md" if stage == LeadAgentStage.INITIAL else "stage_revision.md",
     ]
+    parts = [_load_layer(lf).strip() for lf in layer_files]
+    return "\n\n".join([p for p in parts if p.strip()]).strip() + "\n"
 
-    parts: list[str] = []
-    for lf in layer_files:
-        parts.append(_load_layer(lf).strip())
 
-    parts.append(render_stage_context(stage, context).strip())
-    parts.append(_render_agent_context_block(context).strip())
+def compose_user_message(stage: LeadAgentStage, context) -> str:
+    """Per-call user message: stage prose + rendered runtime context."""
+    stage_file = {
+        LeadAgentStage.INITIAL: "stage_initial.md",
+        LeadAgentStage.REVISION: "stage_revision.md",
+        LeadAgentStage.CONTINUATION: "stage_continuation.md",
+    }[stage]
+
+    parts: list[str] = [
+        _load_layer(stage_file).strip(),
+        render_stage_context(stage, context).strip(),
+    ]
+    if stage == LeadAgentStage.INITIAL:
+        parts.append(_render_agent_context_block(context).strip())
 
     return "\n\n".join([p for p in parts if p.strip()]).strip() + "\n"
 
+
+def compose_prompt(mode: ExecutionMode, stage: LeadAgentStage, context) -> str:
+    """
+    Backward-compatible shim: concatenates system + user (legacy callers only).
+    Prefer compose_system_prompt + compose_user_message for SDK integration.
+    """
+    return (
+        compose_system_prompt(mode).strip()
+        + "\n\n"
+        + compose_user_message(stage, context).strip()
+        + "\n"
+    )

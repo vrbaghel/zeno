@@ -90,6 +90,14 @@ class RoomDefinition(BaseModel):
     description: str
 
 
+class TaskStatusEntry(BaseModel):
+    """Snapshot of a task for lead continuation / revision context."""
+
+    title: str
+    status: Literal["completed", "running", "pending", "failed"]
+    summary: str | None = None
+
+
 class TaskDefinition(BaseModel):
     id: str
     title: str
@@ -110,6 +118,7 @@ class ExecutionPlanResponse(BaseModel):
     tasks: list[TaskDefinition] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     log: MemLog
+    is_final: bool = True
 
 
 WORKER_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -216,6 +225,7 @@ LEAD_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
                     }
                 },
                 "assumptions": {"type": "array", "items": {"type": "string"}},
+                "is_final": {"type": "boolean"},
                 "log": {
                     "type": "object",
                     "properties": {
@@ -229,7 +239,7 @@ LEAD_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
                     "required": ["summary", "decisions", "assumptions", "open_issues", "room"]
                 }
             },
-            "required": ["type", "task_summary", "rooms", "tasks", "assumptions", "log"]
+            "required": ["type", "task_summary", "rooms", "tasks", "assumptions", "is_final", "log"]
         },
         "else": {
             "properties": {
@@ -325,6 +335,11 @@ def validate_lead_response(
 
         if t.room not in room_names:
             errors.append(f"task {t.id}: room {t.room!r} not found in rooms list")
+
+    if not response.is_final and not any(t.checkpoint_before for t in response.tasks):
+        errors.append(
+            "non-final chunk must contain at least one task with checkpoint_before: true"
+        )
 
     return errors
 

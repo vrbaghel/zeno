@@ -27,7 +27,7 @@ async def main() -> None:
         stage=LeadAgentStage.INITIAL,
         working_directory=working_directory,
         existing_rooms=[],
-        agent_context=AgentContext(session_summary="New session", relevant_prior_work=[], agent_history=[]),
+        agent_context=AgentContext(session_summary="New session", relevant_traces=[], agent_logs=[]),
         current_plan=None,
         completed_tasks=None,
         revision_reason=None,

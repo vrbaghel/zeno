@@ -10,13 +10,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from zeno.agents.lead.composer import compose_prompt
+from zeno.agents.lead.composer import compose_system_prompt, compose_user_message
 from zeno.agents.models import (
     AgentContext,
     ClarificationAnswer,
     ClarificationQuestion,
     ExecutionPlanResponse,
     LEAD_AGENT_OUTPUT_SCHEMA,
+    TaskStatusEntry,
     TerminateResponse,
     validate_lead_response,
 )
@@ -64,6 +65,8 @@ class LeadAgentContext(BaseModel):
     current_plan: ExecutionPlanResponse | None = None
     completed_tasks: list[str] | None = None
     revision_reason: str | None = None
+    task_snapshot: list[TaskStatusEntry] | None = None
+    chunk_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,11 @@ class LeadAgentAdapter:
             raise ValidationError("Cannot revise before dispatch()", detail="session_id is not set")
         return await self._run(context=context, resume_session_id=self._session_id)
 
+    async def continue_plan(self, context: LeadAgentContext) -> ExecutionPlanResponse:
+        if not self._session_id:
+            raise ValidationError("Cannot continue before dispatch()", detail="session_id is not set")
+        return await self._run(context=context, resume_session_id=self._session_id)
+
     async def _run(self, *, context: LeadAgentContext, resume_session_id: str | None) -> ExecutionPlanResponse:
         if ClaudeSDKClient is None or ClaudeAgentOptions is None:
             raise ValidationError(
@@ -113,23 +121,24 @@ class LeadAgentAdapter:
             "yes",
             "on",
         }
-        system_prompt = None
-        if resume_session_id is None or send_prompt_on_resume:
-            system_prompt = compose_prompt(
-                mode=self.execution_mode,
-                stage=context.stage,
-                context=context,
-            )
+        system_prompt: str | None = None
+        if resume_session_id is None:
+            system_prompt = compose_system_prompt(self.execution_mode)
+        elif send_prompt_on_resume:
+            system_prompt = compose_system_prompt(self.execution_mode)
+
+        user_message = compose_user_message(context.stage, context)
         logger.info(
             "Lead agent dispatch started | mode=%s stage=%s",
             self.execution_mode.value,
             context.stage.value,
         )
         logger.debug(
-            "Lead agent resume | resume_session_id=%s send_prompt=%s prompt_chars=%s",
+            "Lead agent resume | resume_session_id=%s send_system=%s system_chars=%s user_chars=%s",
             resume_session_id,
             bool(system_prompt),
             len(system_prompt) if system_prompt else 0,
+            len(user_message),
         )
 
         options = ClaudeAgentOptions(
@@ -152,7 +161,7 @@ class LeadAgentAdapter:
         )
 
         async with ClaudeSDKClient(options=options) as client:
-            await client.query(context.raw_input)
+            await client.query(user_message)
 
             while True:
                 async for msg in client.receive_response():

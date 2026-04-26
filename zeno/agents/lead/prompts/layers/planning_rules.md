@@ -56,4 +56,19 @@
 - Every room must be used by at least one task
 - Every task must have a clearly defined agent type and responsibilities
 - The critical path must be as short as possible — parallelize where safe
-- The plan must be complete — no implied work left unspecified
+- The plan must be complete — no implied work left unspecified across chunks (each chunk must be internally coherent)
+
+## Chunked planning
+- Produce **one logical phase per response** — do not dump the entire remaining plan at once
+- Chunk boundaries are your decision — base them on logical phases, dependency boundaries, and task types
+- Every **non-final** chunk must end with at least one task that has `checkpoint_before: true` — this is how Zeno knows to synchronize before the next chunk
+- Set `is_final: true` only when no more tasks remain after this chunk
+- Prioritize parallelism — use `parallel_group` to run up to **five** tasks concurrently within a chunk
+- Never put more than five tasks in the same parallel group
+
+## Continuation behavior
+- When you receive an **EXECUTION UPDATE** (continuation stage), you are being asked for the **next chunk**
+- Use **completed**, **running**, **pending**, and **failed** task lines in the update to sequence the next phase safely
+- You already know everything you planned previously from session history — do not contradict it unless the update shows failure or a clear mismatch
+- Do not re-plan tasks that are **completed** or **running** — only add or adjust work that logically follows
+- If a task **failed**, your next chunk should address recovery or an alternate path before proceeding

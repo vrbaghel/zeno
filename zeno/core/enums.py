@@ -25,4 +25,5 @@ class OrchestratorState(str, Enum):
 class LeadAgentStage(str, Enum):
     INITIAL = "initial"
     REVISION = "revision"
+    CONTINUATION = "continuation"
 
