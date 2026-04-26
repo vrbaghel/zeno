@@ -21,12 +21,13 @@ from zeno.agents.models import (
     ClarificationAnswer,
     ClarificationQuestion,
     ExecutionPlanResponse,
+    TaskStatusEntry,
     WorkerMetrics,
     WorkerResponse,
 )
 from zeno.agents.worker.adapter import WorkerAdapter
 from zeno.cli import display as cli_display
-from zeno.core.enums import ExecutionMode, OrchestratorState
+from zeno.core.enums import ExecutionMode, LeadAgentStage, OrchestratorState
 from zeno.db import repository as db_repository
 from zeno.db.engine import dispose_db_engine
 from zeno.db.models import DbExecutionPlan, DbSession, DbTask, PlanStatus, SessionStatus, TaskStatus
@@ -216,56 +217,21 @@ class OrchestratorCore:
                 len(getattr(lead_plan, "rooms", []) or []),
             )
 
-            await self._transition(OrchestratorState.PLANNING)
-
             planner = ExecutionPlanner(
                 db_repo=self.db_repo,
                 working_directory=self.working_directory,
                 vault_name=self.vault_name,
             )
-            plan = await planner.build_plan(lead_plan, session=session)
-            logger.info("Executing plan | session_id=%s plan_id=%s", session.id, plan.id)
+            task_id_map: dict[str, uuid.UUID] = {}
+            if not await self._execute_lazy_plan(
+                raw_input=raw_input,
+                session=session,
+                planner=planner,
+                initial_chunk=lead_plan,
+                task_id_map=task_id_map,
+            ):
+                return False
 
-            # Persist lead SDK session id for later resumption (revision).
-            if self.lead_adapter and self.lead_adapter.session_id:
-                await self.db_repo.update_session_lead_session_id(session.id, self.lead_adapter.session_id)
-
-            # HITL plan approval (A/B/C)
-            if self.execution_mode == ExecutionMode.HITL and self.hitl_callback is not None:
-                while True:
-                    choice = await self._create_checkpoint(
-                        CheckpointContent(
-                            type="plan_approval",
-                            title="Approve execution plan?",
-                            description="A: Approve  B: Cancel  C: Modify",
-                            options=[
-                                CheckpointOption(key="a", label="Approve"),
-                                CheckpointOption(key="b", label="Cancel"),
-                                CheckpointOption(key="c", label="Modify"),
-                            ],
-                            payload={},
-                        )
-                    )
-                    if choice == "a":
-                        break
-                    if choice == "b":
-                        await teardown_session(
-                            session.id,
-                            status=SessionStatus.aborted,
-                            orchestrator_state=OrchestratorState.ABORTED,
-                            db_repo=self.db_repo,
-                        )
-                        return False
-                    if choice == "c":
-                        lead_plan = await self._revise_plan(
-                            raw_input=raw_input,
-                            current_plan=lead_plan,
-                        )
-                        plan = await planner.build_plan(lead_plan, session=session)
-                        continue
-
-            await self._transition(OrchestratorState.EXECUTING)
-            await self._execute_plan(plan)
             await self._complete_session()
 
             elapsed = perf_counter() - t0
@@ -315,6 +281,7 @@ class OrchestratorCore:
         current_plan: ExecutionPlanResponse | None,
         completed_tasks: list[str] | None,
         revision_reason: str | None,
+        task_snapshot: list[TaskStatusEntry] | None = None,
     ) -> ExecutionPlanResponse:
         if self._vault is None or self.current_session is None:
             raise InitializationError("Session not initialized")
@@ -354,8 +321,6 @@ class OrchestratorCore:
             agent_logs=[d.to_document().strip() for d in getattr(mem_ctx, "agent_logs", [])] if mem_ctx else [],
         )
 
-        from zeno.core.enums import LeadAgentStage
-
         ctx = LeadAgentContext(
             session_id=str(self.current_session.id),
             raw_input=raw_input,
@@ -367,6 +332,7 @@ class OrchestratorCore:
             current_plan=current_plan,
             completed_tasks=completed_tasks,
             revision_reason=revision_reason,
+            task_snapshot=task_snapshot,
         )
 
         if self.lead_adapter is None:
@@ -427,7 +393,201 @@ class OrchestratorCore:
             revision_reason=reason,
         )
 
-    async def _execute_plan(self, plan: DbExecutionPlan) -> None:
+    async def _execute_lazy_plan(
+        self,
+        *,
+        raw_input: str,
+        session: DbSession,
+        planner: ExecutionPlanner,
+        initial_chunk: ExecutionPlanResponse,
+        task_id_map: dict[str, uuid.UUID],
+    ) -> bool:
+        """
+        Chunked planning loop: build/append each chunk, execute with checkpoint_before gates,
+        prefetch next chunk in background when is_final is false.
+        Returns False if user aborted at a checkpoint.
+        """
+        chunk = initial_chunk
+        chunk_num = 1
+        prefetch: asyncio.Task[ExecutionPlanResponse] | None = None
+        db_plan: DbExecutionPlan | None = None
+
+        while True:
+            await self._transition(OrchestratorState.PLANNING)
+            if db_plan is None:
+                db_plan = await planner.build_plan(
+                    chunk, session=session, plan=None, task_id_map=task_id_map
+                )
+            else:
+                db_plan = await planner.build_plan(
+                    chunk, session=session, plan=db_plan, task_id_map=task_id_map
+                )
+            logger.info(
+                "Lazy plan chunk built | session_id=%s plan_id=%s chunk=%s is_final=%s",
+                session.id,
+                db_plan.id,
+                chunk_num,
+                chunk.is_final,
+            )
+            if self.lead_adapter and self.lead_adapter.session_id:
+                await self.db_repo.update_session_lead_session_id(session.id, self.lead_adapter.session_id)
+
+            await self._transition(OrchestratorState.EXECUTING)
+            prefetch = await self._execute_plan_chunk(
+                plan=db_plan,
+                raw_input=raw_input,
+                chunk_number=chunk_num,
+                is_final=chunk.is_final,
+                prefetch_task=prefetch,
+            )
+
+            if chunk.is_final:
+                break
+
+            assert prefetch is not None
+            next_chunk = await prefetch
+
+            if self.execution_mode == ExecutionMode.HITL and self.hitl_callback is not None:
+                choice = await self._chunk_boundary_checkpoint(next_chunk)
+                if choice == "c":
+                    await teardown_session(
+                        session.id,
+                        status=SessionStatus.aborted,
+                        orchestrator_state=OrchestratorState.ABORTED,
+                        db_repo=self.db_repo,
+                    )
+                    return False
+                if choice == "b":
+                    reason = await cli_display.print_revision_prompt(self._rich_console)
+                    snap = await self._snapshot_plan_tasks(db_plan.id)
+                    next_chunk = await self._dispatch_lead_agent(
+                        raw_input=raw_input,
+                        stage="revision",
+                        current_plan=next_chunk,
+                        completed_tasks=[],
+                        revision_reason=reason,
+                        task_snapshot=snap,
+                    )
+
+            chunk = next_chunk
+            chunk_num += 1
+            prefetch = None
+
+        return True
+
+    async def _execute_plan_chunk(
+        self,
+        *,
+        plan: DbExecutionPlan,
+        raw_input: str,
+        chunk_number: int,
+        is_final: bool,
+        prefetch_task: asyncio.Task[ExecutionPlanResponse] | None,
+    ) -> asyncio.Task[ExecutionPlanResponse] | None:
+        out = prefetch_task
+        if (
+            not is_final
+            and out is None
+            and self.lead_adapter is not None
+        ):
+            ctx = await self._build_continuation_context(raw_input, plan, chunk_number)
+            out = asyncio.create_task(self.lead_adapter.continue_plan(ctx))
+            logger.info("Lazy prefetch started | chunk_number=%s plan_id=%s", chunk_number, plan.id)
+
+        await self._run_plan_execution_with_checkpoints(plan)
+        return out
+
+    async def _chunk_boundary_checkpoint(self, next_chunk: ExecutionPlanResponse) -> str:
+        if self.execution_mode == ExecutionMode.YOLO or self.hitl_callback is None:
+            return "a"
+        lines = "\n".join(f"- {t.title} ({t.id})" for t in next_chunk.tasks)
+        choice = await self._create_checkpoint(
+            CheckpointContent(
+                type="pre_fanout",
+                title="Approve next phase?",
+                description=f"Planned tasks:\n{lines}\n\nA: Approve  B: Revise  C: Cancel",
+                options=[
+                    CheckpointOption(key="a", label="Approve"),
+                    CheckpointOption(key="b", label="Revise"),
+                    CheckpointOption(key="c", label="Cancel"),
+                ],
+                payload={},
+            )
+        )
+        if choice == "a":
+            await self._transition(OrchestratorState.EXECUTING)
+        return choice
+
+    async def _snapshot_plan_tasks(self, plan_id: uuid.UUID) -> list[TaskStatusEntry]:
+        entries: list[TaskStatusEntry] = []
+        for t in await self.db_repo.get_tasks_by_plan(plan_id):
+            if t.status == TaskStatus.completed:
+                st = "completed"
+            elif t.status == TaskStatus.running:
+                st = "running"
+            elif t.status == TaskStatus.failed:
+                st = "failed"
+            elif t.status == TaskStatus.cancelled:
+                st = "failed"
+            else:
+                st = "pending"
+            entries.append(TaskStatusEntry(title=t.title, status=st, summary=t.result_summary))
+        return entries
+
+    async def _build_continuation_context(
+        self, raw_input: str, plan: DbExecutionPlan, chunk_number: int
+    ) -> LeadAgentContext:
+        assert self.current_session is not None
+        snapshot = await self._snapshot_plan_tasks(plan.id)
+        wd = self.working_directory
+        return LeadAgentContext(
+            session_id=str(self.current_session.id),
+            raw_input=raw_input,
+            mode=self.execution_mode,
+            stage=LeadAgentStage.CONTINUATION,
+            working_directory=wd,
+            existing_rooms=[],
+            agent_context=AgentContext(session_summary="", relevant_traces=[], agent_logs=[]),
+            task_snapshot=snapshot,
+            chunk_number=chunk_number,
+        )
+
+    async def _fire_task_checkpoint(self, tasks: list[DbTask]) -> None:
+        if not tasks or not any(t.checkpoint_before for t in tasks):
+            return
+        if self.execution_mode == ExecutionMode.YOLO:
+            logger.info(
+                "Checkpoint auto-approved (YOLO) | %s",
+                [t.title for t in tasks if t.checkpoint_before],
+            )
+            return
+        if self.hitl_callback is None:
+            return
+        assert self.current_session is not None
+        titles = ", ".join(t.title for t in tasks if t.checkpoint_before)
+        choice = await self._create_checkpoint(
+            CheckpointContent(
+                type="pre_fanout",
+                title="Proceed with task(s)?",
+                description=f"About to run: {titles}\n\nA: Approve  B: Cancel",
+                options=[
+                    CheckpointOption(key="a", label="Approve"),
+                    CheckpointOption(key="b", label="Cancel"),
+                ],
+                payload={},
+            )
+        )
+        if choice == "b":
+            await teardown_session(
+                self.current_session.id,
+                status=SessionStatus.aborted,
+                orchestrator_state=OrchestratorState.ABORTED,
+                db_repo=self.db_repo,
+            )
+            raise DispatchError("User cancelled at task checkpoint", detail=titles)
+        await self._transition(OrchestratorState.EXECUTING)
+
+    async def _run_plan_execution_with_checkpoints(self, plan: DbExecutionPlan) -> None:
         while True:
             runnable = await self.db_repo.get_runnable_tasks(plan.id)
             if not runnable:
@@ -445,16 +605,14 @@ class OrchestratorCore:
                 else:
                     sequential.append(task)
 
-            # Execute parallel groups stage-by-stage; within each stage dispatch concurrently,
-            # then run a merge agent to integrate the group branches.
             for group_key, group_tasks in parallel_groups.items():
+                await self._fire_task_checkpoint(group_tasks)
                 logger.info(
                     "Parallel stage start | group=%s tasks=%d",
                     group_key,
                     len(group_tasks),
                 )
                 assert self.current_session is not None
-                # 1) Create worktrees concurrently
                 worktrees = await asyncio.gather(
                     *[
                         git_ops.create_worktree(self.working_directory, self.current_session.id, t.id)
@@ -470,7 +628,6 @@ class OrchestratorCore:
                         branch_name,
                     )
 
-                # 2) Dispatch tasks concurrently (no per-task merge; merge happens in stage merge agent)
                 results = await asyncio.gather(
                     *[
                         self._execute_task(
@@ -489,7 +646,6 @@ class OrchestratorCore:
                     r for r in results if isinstance(r, BaseException)
                 ]
 
-                # If any task failed, skip merge agent and fail the stage (after cleanup).
                 if failures:
                     for t, (worktree_path, branch_name) in zip(group_tasks, worktrees, strict=False):
                         try:
@@ -506,7 +662,6 @@ class OrchestratorCore:
                         detail=f"{type(first).__name__}: {first}",
                     ) from first
 
-                # 3) Merge stage via merge agent (real worker) and then clean up all group worktrees/branches.
                 logger.info("Parallel stage merge | group=%s branches=%d", group_key, len(worktrees))
                 await self._merge_parallel_stage(
                     plan=plan,
@@ -520,9 +675,12 @@ class OrchestratorCore:
                     await self.db_repo.clear_worktree(t.id)
                 logger.info("Parallel stage complete | group=%s", group_key)
 
-            # Execute sequential tasks one at a time (includes merge).
             for task in sequential:
+                await self._fire_task_checkpoint([task])
                 await self._execute_task(plan=plan, task=task)
+
+    async def _execute_plan(self, plan: DbExecutionPlan) -> None:
+        await self._run_plan_execution_with_checkpoints(plan)
 
     async def _execute_task(
         self,

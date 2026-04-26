@@ -187,7 +187,22 @@ Phase 8A introduces the lead agent prompt architecture and a unified lead respon
 
 ## Phase 8B (lead agent ↔ orchestrator integration)
 
-Phase 8B wires the lead agent into the orchestrator: the lead agent produces an execution plan, the orchestrator persists it to SQLite (rooms/tasks/dependencies/assignments), supports a HITL clarification loop and plan approval, and routes worker dispatch by provider.
+Phase 8B wires the lead agent into the orchestrator: the lead agent produces an execution plan, the orchestrator persists it to SQLite (rooms/tasks/dependencies/assignments), supports a HITL clarification loop, and routes worker dispatch by provider.
+
+### Chunked (lazy) planning
+
+The lead can emit the work in **chunks** instead of one monolithic plan:
+
+- **`ExecutionPlanResponse.is_final`**: when `false`, the orchestrator expects another chunk after the current one finishes.
+- **Persistence**: later chunks are **appended** to the same `DbExecutionPlan` (priorities continue after existing tasks). Dependencies may reference task ids from earlier chunks via an in-memory id map during the session.
+- **Prefetch**: while a non-final chunk runs, the orchestrator may start **`continue_plan`** in the background so the next chunk is ready at the boundary.
+- **HITL**:
+  - There is **no** upfront “approve the entire plan” gate.
+  - **`checkpoint_before`** on a task (or parallel group) triggers a human checkpoint immediately before that work runs (skipped in YOLO).
+  - At each **chunk boundary** (before appending the prefetched next chunk), HITL can approve, revise (lead revision with a DB task snapshot), or cancel.
+- **Resume**: `OrchestratorCore.resume()` still runs remaining runnable tasks on the active plan; task-level checkpoints apply to work not yet dispatched.
+
+Lead prompts under `zeno/agents/lead/prompts/layers/` include **`stage_continuation.md`** and updates to **`stage_initial.md`**, **`stage_revision.md`**, **`planning_rules.md`**, and **`response_format.md`** for this model.
 
 ## Phase 6 (bare orchestrator)
 

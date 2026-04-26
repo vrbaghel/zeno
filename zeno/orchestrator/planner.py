@@ -25,23 +25,36 @@ class ExecutionPlanner:
         response: ExecutionPlanResponse,
         *,
         session,
+        plan: DbExecutionPlan | None = None,
+        task_id_map: dict[str, uuid.UUID] | None = None,
     ) -> DbExecutionPlan:
         errs = validate_lead_response(response)
         if errs:
             raise ValidationError("Lead agent response failed validation", detail="\n".join(errs))
 
         logger.info(
-            "Building plan | session_id=%s tasks=%d rooms=%d",
+            "Building plan | session_id=%s tasks=%d rooms=%d append=%s",
             session.id,
             len(response.tasks),
             len(response.rooms),
+            plan is not None,
         )
 
-        # 2) Create plan
+        id_map = task_id_map if task_id_map is not None else {}
+        activate_new_plan = plan is None
+
+        # 2) Create plan (or reuse for lazy chunk append)
         try:
-            plan = await self.db_repo.create_execution_plan(session.id)
+            if plan is None:
+                plan = await self.db_repo.create_execution_plan(session.id)
         except Exception as e:
             raise StorageError("Failed to create execution plan", detail=str(e)) from e
+
+        try:
+            existing_tasks = await self.db_repo.get_tasks_by_plan(plan.id)
+            priority_base = max((t.priority for t in existing_tasks), default=0)
+        except Exception as e:
+            raise StorageError("Failed to read existing tasks for plan", detail=str(e)) from e
 
         # 3) Ensure rooms exist (SQLite rooms table is vault-scoped).
         try:
@@ -55,7 +68,7 @@ class ExecutionPlanner:
         except Exception as e:
             raise StorageError("Failed to create rooms", detail=str(e)) from e
 
-        # 4) Local id -> UUID mapping
+        # 4) Local id -> UUID mapping (chunk tasks + task_id_map for cross-chunk deps)
         # 5) Create tasks
         created_task_uuid_by_local: dict[str, uuid.UUID] = {}
         for idx, t in enumerate(response.tasks):
@@ -66,7 +79,7 @@ class ExecutionPlanner:
                     title=t.title,
                     description=t.description,
                     task_type=t.type,
-                    priority=idx + 1,
+                    priority=priority_base + idx + 1,
                     parallel_group=t.parallel_group,
                     checkpoint_before=bool(t.checkpoint_before),
                 )
@@ -74,6 +87,7 @@ class ExecutionPlanner:
                 raise StorageError(f"Failed to create task {t.id}", detail=str(e)) from e
 
             created_task_uuid_by_local[t.id] = db_task.id
+            id_map[t.id] = db_task.id
             logger.debug(
                 "Task created | id=%s title=%s type=%s agent_type=%s",
                 t.id,
@@ -82,13 +96,19 @@ class ExecutionPlanner:
                 t.agent_type,
             )
 
-        # 6) Dependencies
+        # 6) Dependencies (within chunk + prior chunks via id_map)
         for t in response.tasks:
             for dep_local in t.depends_on:
+                dep_uuid = id_map.get(dep_local)
+                if dep_uuid is None:
+                    raise StorageError(
+                        f"Task {t.id} depends_on unknown id {dep_local!r}",
+                        detail="dependency must reference a task id from this or a prior chunk",
+                    )
                 try:
                     await self.db_repo.add_task_dependency(
                         created_task_uuid_by_local[t.id],
-                        created_task_uuid_by_local[dep_local],
+                        dep_uuid,
                     )
                     logger.debug("Task dependency | %s depends_on %s", t.id, dep_local)
                 except Exception as e:
@@ -127,11 +147,12 @@ class ExecutionPlanner:
             except Exception as e:
                 raise StorageError(f"Failed to create assignment for task {t.id}", detail=str(e)) from e
 
-        # 9) Mark plan active
-        try:
-            await self.db_repo.activate_plan(plan.id)
-        except Exception as e:
-            raise StorageError("Failed to activate plan", detail=str(e)) from e
+        # 9) Mark plan active (new plan only — appended chunks reuse active plan)
+        if activate_new_plan:
+            try:
+                await self.db_repo.activate_plan(plan.id)
+            except Exception as e:
+                raise StorageError("Failed to activate plan", detail=str(e)) from e
 
         logger.info("Plan built | plan_id=%s tasks=%d", plan.id, len(response.tasks))
 

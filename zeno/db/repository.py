@@ -391,6 +391,17 @@ async def get_completed_tasks(plan_id: uuid.UUID) -> list[DbTask]:
         return list(r.scalars().all())
 
 
+async def get_running_tasks(plan_id: uuid.UUID) -> list[DbTask]:
+    factory = get_session_factory()
+    async with factory() as db:
+        r = await db.execute(
+            select(DbTask)
+            .where(DbTask.plan_id == plan_id, DbTask.status == TaskStatus.running)
+            .order_by(DbTask.created_at.asc())
+        )
+        return list(r.scalars().all())
+
+
 async def update_task_status(task_id: uuid.UUID, status: TaskStatus) -> None:
     logger.debug("update_task_status | task_id=%s status=%s", task_id, status.value)
     factory = get_session_factory()
