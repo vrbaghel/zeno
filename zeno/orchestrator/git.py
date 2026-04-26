@@ -58,7 +58,7 @@ async def ensure_initial_commit(working_directory: str) -> None:
         return
 
     rc2, out2, err2 = await _run_git(
-        ["commit", "--allow-empty", "-m", "chore: initial commit"],
+        ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "chore: initial zeno commit"],
         cwd=root,
     )
     if rc2 != 0:
@@ -101,7 +101,7 @@ async def merge_worktree(
     msg = f"zeno: {task_title}".strip()
 
     rc, out, err = await _run_git(
-        ["merge", "--no-ff", branch_name, "-m", msg],
+        ["-c", "commit.gpgsign=false", "merge", "--no-ff", branch_name, "-m", msg],
         cwd=str(root),
     )
     if rc != 0:
@@ -151,7 +151,7 @@ async def commit_worktree_changes(worktree_path: str, task_title: str) -> None:
         )
 
     msg = f"feat: {task_title}".strip()
-    rc3, out3, err3 = await _run_git(["commit", "-m", msg], cwd=root)
+    rc3, out3, err3 = await _run_git(["-c", "commit.gpgsign=false", "commit", "-m", msg], cwd=root)
     if rc3 != 0:
         raise InitializationError(
             "Failed to commit worktree changes",

@@ -41,12 +41,34 @@ def build_system_prompt(
 
     # 4) Behavioral rules
     parts.append("## Rules")
-    parts.append(
-        "- Complete your task fully before reporting back\n"
-        "- Work only within your assigned scope — do not touch unrelated files\n"
-        "- Assume no context beyond what is provided above\n"
-        "- If you encounter a blocker, document it clearly in your log"
-    )
+    at = (agent_type or "").strip().lower()
+    if at in {"testing", "validation"}:
+        parts.append(
+            "- Complete your task fully before reporting back\n"
+            "- Work only within your assigned scope — do not touch unrelated files\n"
+            "- Install dependencies as needed to run and validate the code\n"
+            "- Execute the code/tests and verify correctness\n"
+            "- Report test results and any failures clearly\n"
+            "- If you encounter a blocker, document it clearly in your log"
+        )
+    elif at in {"integration", "merge"}:
+        parts.append(
+            "- Complete your task fully before reporting back\n"
+            "- Work only within your assigned scope — do not touch unrelated files\n"
+            "- You may use git commands to merge branches and resolve conflicts\n"
+            "- Do NOT add new features unrelated to resolving integration issues\n"
+            "- If you encounter a blocker, document it clearly in your log"
+        )
+    else:
+        parts.append(
+            "- Complete your task fully before reporting back\n"
+            "- Work only within your assigned scope — do not touch unrelated files\n"
+            "- Do NOT install dependencies or packages\n"
+            "- Do NOT run or execute code\n"
+            "- Only write, create, and modify files\n"
+            "- Leave execution and validation to the testing agent\n"
+            "- If you encounter a blocker, document it clearly in your log"
+        )
 
     # 5) Reporting guidance
     parts.append("## When you finish")

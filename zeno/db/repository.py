@@ -106,6 +106,23 @@ async def update_session_lead_session_id(session_id: uuid.UUID, lead_session_id:
         await db.commit()
 
 
+async def get_latest_lead_session_id_for_vault(vault_path: str) -> str | None:
+    """
+    Return the most recent non-null lead agent SDK session id for a vault path.
+
+    This enables resuming a single lead-agent conversation across CLI invocations.
+    """
+    factory = get_session_factory()
+    async with factory() as db:
+        res = await db.execute(
+            select(DbSession.lead_session_id)
+            .where(DbSession.working_directory == vault_path, DbSession.lead_session_id.is_not(None))
+            .order_by(DbSession.created_at.desc())
+            .limit(1)
+        )
+        return res.scalar_one_or_none()
+
+
 async def update_orchestrator_state(session_id: uuid.UUID, state: OrchestratorState) -> None:
     factory = get_session_factory()
     async with factory() as db:

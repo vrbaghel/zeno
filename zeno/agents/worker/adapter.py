@@ -59,7 +59,7 @@ class WorkerAdapter:
                 )
             )
 
-        agent_type = str(getattr(task, "agent_type", "") or "")
+        agent_type = str(getattr(agent, "type", "") or getattr(task, "agent_type", "") or "")
         agent_responsibilities = getattr(task, "agent_responsibilities", None)
 
         system_prompt = build_system_prompt(
@@ -72,6 +72,8 @@ class WorkerAdapter:
             system_prompt=system_prompt,
             allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
             permission_mode="acceptEdits",
+            model="claude-haiku-4-5-20251001",
+            max_turns=30,
             output_format=WORKER_RESPONSE_SCHEMA,
             cwd=self.working_directory,
         )

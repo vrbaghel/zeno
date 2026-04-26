@@ -87,7 +87,7 @@ class LeadAgentAdapter:
         return self._session_id
 
     async def dispatch(self, context: LeadAgentContext) -> ExecutionPlanResponse:
-        return await self._run(context=context, resume_session_id=None)
+        return await self._run(context=context, resume_session_id=self._session_id)
 
     async def revise(self, context: LeadAgentContext) -> ExecutionPlanResponse:
         if not self._session_id:
@@ -104,11 +104,19 @@ class LeadAgentAdapter:
                 ).strip(),
             )
 
-        system_prompt = compose_prompt(
-            mode=self.execution_mode,
-            stage=context.stage,
-            context=context,
-        )
+        send_prompt_on_resume = os.getenv("ZENO_LEAD_RESUME_SEND_PROMPT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        system_prompt = None
+        if resume_session_id is None or send_prompt_on_resume:
+            system_prompt = compose_prompt(
+                mode=self.execution_mode,
+                stage=context.stage,
+                context=context,
+            )
 
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
