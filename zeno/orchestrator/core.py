@@ -138,6 +138,7 @@ class _StateMachine:
                 },
                 OrchestratorState.EXECUTING: {
                     OrchestratorState.AWAITING_LEAD,
+                    OrchestratorState.PLANNING,
                     OrchestratorState.MERGING,
                     OrchestratorState.COMPLETED,
                     OrchestratorState.FAILED,
@@ -927,15 +928,118 @@ class OrchestratorCore:
 
     async def _merge_parallel_stage(self, *, plan: DbExecutionPlan, stage_key: str, branches: list[str]) -> None:
         """
-        Run a merge agent to integrate a completed parallel group into main.
+        Integrate all parallel task branches into an integration worktree, then
+        fast-merge that worktree back to main.
+
+        Strategy:
+        1. Create an integration worktree branching from current HEAD.
+        2. For each parallel branch attempt a gpg-safe --no-ff merge.
+        3. On conflict: leave the repo in the MERGING state and dispatch a
+           lightweight LLM agent to fix conflict markers (file edits only, no git).
+        4. Commit the resolved merge and continue.
+        5. Merge the completed integration branch back to main.
         """
         assert self.current_session is not None
-        if self.worker_adapter is None:
-            raise InitializationError("Worker adapter not initialized")
 
         merge_task_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"merge:{self.current_session.id}:{stage_key}")
         merge_worktree_path, merge_branch_name = await git_ops.create_worktree(
             self.working_directory, self.current_session.id, merge_task_id
+        )
+
+        try:
+            for branch in branches:
+                logger.info("Integration merge | group=%s branch=%s", stage_key, branch)
+                clean = await git_ops.merge_branch_in_worktree(
+                    merge_worktree_path,
+                    branch_name=branch,
+                    task_title=f"stage {stage_key}",
+                )
+                if not clean:
+                    await self._resolve_merge_conflict(
+                        worktree_path=merge_worktree_path,
+                        branch_name=branch,
+                        stage_key=stage_key,
+                    )
+        except Exception:
+            try:
+                await git_ops.cleanup_worktree(
+                    self.working_directory,
+                    worktree_path=merge_worktree_path,
+                    branch_name=merge_branch_name,
+                )
+            except Exception as cleanup_err:
+                logger.warning("Integration worktree cleanup failed | err=%s", cleanup_err)
+            raise
+
+        await self._transition(OrchestratorState.MERGING)
+        await git_ops.merge_worktree(
+            self.working_directory,
+            branch_name=merge_branch_name,
+            task_title=f"merge stage {stage_key}",
+        )
+        await git_ops.cleanup_worktree(
+            self.working_directory,
+            worktree_path=merge_worktree_path,
+            branch_name=merge_branch_name,
+        )
+        await self._transition(OrchestratorState.EXECUTING)
+
+    async def _resolve_merge_conflict(
+        self,
+        *,
+        worktree_path: str,
+        branch_name: str,
+        stage_key: str,
+    ) -> None:
+        """
+        Use a minimal LLM agent to resolve conflict markers left by a failed git merge.
+
+        The orchestrator has already run `git merge` (which left the MERGING state).
+        The agent's only job is to edit conflicting files to remove markers — no git
+        commands. The orchestrator then stages and commits the resolved state.
+        """
+        if self.worker_adapter is None:
+            raise InitializationError("Worker adapter not initialized for conflict resolution")
+
+        conflicted = await git_ops.get_conflicted_files(worktree_path)
+        if not conflicted:
+            # Merge left no conflict markers — nothing to resolve; just commit.
+            await git_ops.commit_resolved_merge(
+                worktree_path,
+                message=f"zeno: resolve merge stage {stage_key} / {branch_name}",
+            )
+            return
+
+        logger.info(
+            "Conflict resolution | group=%s branch=%s files=%s",
+            stage_key,
+            branch_name,
+            conflicted,
+        )
+
+        files_list = "\n".join(f"- {f}" for f in conflicted)
+        instructions = (
+            f"A git merge of branch `{branch_name}` into the integration branch "
+            f"for parallel stage `{stage_key}` has left conflict markers in the "
+            f"following files:\n\n{files_list}\n\n"
+            "Your task:\n"
+            "1. Read each conflicted file.\n"
+            "2. Remove ALL conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), "
+            "keeping the correct combined content.\n"
+            "3. Write the resolved file back.\n"
+            "4. Do NOT run any git commands — only file edits.\n"
+            "5. Success looks like: every conflicted file has no remaining conflict markers."
+        )
+        from types import SimpleNamespace
+
+        fake_task = SimpleNamespace(
+            description=instructions,
+            agent_responsibilities=(
+                "Edit conflicting files to remove merge conflict markers. "
+                "Do not run git commands."
+            ),
+            agent_type="integration",
+            title=f"resolve conflict: {branch_name}",
         )
 
         # Get or create a stable merge agent.
@@ -948,42 +1052,36 @@ class OrchestratorCore:
                 system_prompt="(dynamic)",
             )
 
-        # Dispatch the merge agent inside the merge worktree.
-        self.worker_adapter.working_directory = merge_worktree_path
-        merge_instructions = (
-            "Merge the following branches into the current branch, resolving conflicts if any.\n\n"
-            f"Branches:\n" + "\n".join([f"- {b}" for b in branches]) + "\n\n"
-            "Rules:\n"
-            "- Use git to merge branches one by one\n"
-            "- Resolve conflicts by editing files, then continue the merge\n"
-            "- After merging all branches, ensure working tree is clean and committed\n"
-        )
-        from types import SimpleNamespace
-
-        fake_task = SimpleNamespace(
-            description=merge_instructions,
-            agent_responsibilities="Integrate parallel stage branches and resolve conflicts.",
-            agent_type="integration",
-        )
+        prev_wd = self.worker_adapter.working_directory
+        self.worker_adapter.working_directory = worktree_path
         try:
-            response, _metrics = await self.worker_adapter.dispatch(
-                task=fake_task, agent=merge_agent, chroma_context=AgentContext(session_summary="", relevant_traces=[], agent_logs=[])
+            await self.worker_adapter.dispatch(
+                task=fake_task,
+                agent=merge_agent,
+                chroma_context=AgentContext(session_summary="", relevant_traces=[], agent_logs=[]),
             )
         except WorkerTerminationError as e:
-            await git_ops.cleanup_worktree(
-                self.working_directory, worktree_path=merge_worktree_path, branch_name=merge_branch_name
-            )
             raise DispatchError(
-                f"Merge agent could not integrate parallel stage {stage_key}",
+                f"Conflict resolver could not resolve stage {stage_key} / {branch_name}",
                 detail=str(e),
             ) from e
+        except ParseError as e:
+            # The merge agent edited the files but could not produce valid structured
+            # output after reconciliation retries. The file edits are what matter here —
+            # log the warning and proceed to commit whatever was written.
+            logger.warning(
+                "Merge agent parse failed after reconciliation — committing file edits anyway | "
+                "group=%s branch=%s err=%s",
+                stage_key,
+                branch_name,
+                e,
+            )
+        finally:
+            self.worker_adapter.working_directory = prev_wd
 
-        # Ensure merge branch has commits (stage+commit if needed), then merge back to main.
-        await git_ops.commit_worktree_changes(worktree_path=merge_worktree_path, task_title=f"merge stage {stage_key}")
-        await self._transition(OrchestratorState.MERGING)
-        await git_ops.merge_worktree(self.working_directory, branch_name=merge_branch_name, task_title=f"merge stage {stage_key}")
-        await git_ops.cleanup_worktree(
-            self.working_directory, worktree_path=merge_worktree_path, branch_name=merge_branch_name
+        await git_ops.commit_resolved_merge(
+            worktree_path,
+            message=f"zeno: resolve merge stage {stage_key} / {branch_name}",
         )
 
     async def _finalize_lingering_worktree(self, task: DbTask) -> None:

@@ -1,11 +1,18 @@
 # Zeno
 
-Zeno is a multi-agent orchestration framework with:
+Zeno is a multi-agent orchestration framework built on the Claude Agent SDK. It coordinates a **lead agent** that plans work and **worker agents** that execute tasks in isolated git worktrees, with full persistence and semantic memory across sessions.
 
-- an interactive CLI (`zeno`)
-- a lead agent that produces an execution plan
-- worker agents that execute tasks in isolated git worktrees
-- persistence via SQLite (orchestrator state) and ChromaDB (semantic memory)
+## Features
+
+- **Interactive CLI** (`zeno`) with HITL and YOLO execution modes
+- **Lead agent** that clarifies ambiguous requests, produces a structured execution plan, and continues planning in chunks as work progresses
+- **Worker agents** dispatched per-task into isolated git worktrees; changes are committed and merged back automatically
+- **Chunked (lazy) planning** — the lead emits one logical phase at a time; the orchestrator prefetches the next chunk in the background while the current phase runs
+- **Parallel execution** — tasks in the same `parallel_group` run concurrently (up to five tasks per group)
+- **HITL checkpoints** — human approval gates before expensive or risky tasks; plan revision and cancellation supported at every chunk boundary
+- **Session resume** — orchestrator state is fully persisted so sessions can be resumed across restarts
+- **Semantic memory** via ChromaDB — agents write structured diary entries after each task; future tasks receive relevant context automatically
+- **Worker parse-error reconciliation** — on a bad structured response, the worker adapter retries with a cheap correction prompt before failing
 
 ## Install (dev)
 
@@ -14,234 +21,171 @@ From the repo root:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -e .
+pip install -U pip
+pip install -e .
+```
+
+Or with `uv`:
+
+```bash
+uv sync
+source .venv/bin/activate
 ```
 
 ## Run
 
 ```bash
-zeno          # HITL mode (default)
-zeno --yolo   # YOLO mode
+zeno           # HITL mode (default)
+zeno --yolo    # YOLO mode — no approval gates
 ```
 
-The `zeno` command starts an **interactive** session:
+Slash commands available at the prompt:
 
-- One long-lived `OrchestratorCore`
-- A new SQLite `DbSession` per task line you enter
-- Slash commands: `/quit`, `/status`, `/help`
+| Command | Description |
+|---------|-------------|
+| `/quit` | Exit the session |
+| `/status` | Show current session and task state |
+| `/help` | List available commands |
 
-## Core terminology
+## Architecture
+
+```
+CLI (zeno)
+  └─ OrchestratorCore
+       ├─ LeadAgentAdapter     ← long-lived SDK session; produces chunked execution plans
+       ├─ WorkerAdapter        ← one-shot SDK dispatch per task; runs in git worktree
+       ├─ ExecutionPlanner     ← persists plans/rooms/tasks/deps/assignments to SQLite
+       ├─ git ops              ← worktree create, commit, merge, cleanup
+       └─ memory (ChromaDB)    ← semantic trace store; context injected into each worker
+```
+
+### Lead agent
+
+The lead agent runs as a persistent SDK session. It:
+
+1. Asks clarifying questions (HITL mode only) via `AskUserQuestion`
+2. Emits an `ExecutionPlanResponse` (with `is_final` flag for chunked planning)
+3. Receives `EXECUTION UPDATE` messages when asked for the next chunk
+4. Can be asked to revise a plan mid-execution (e.g. after a HITL rejection)
+
+Prompt layers live under `zeno/agents/lead/prompts/layers/` and are composed dynamically by `zeno/agents/lead/composer.py`.
+
+### Worker agents
+
+Each task gets its own SDK `query()` call with:
+
+- A dynamically built system prompt (role derived from `agent_type`, responsibilities from the plan)
+- ChromaDB context from prior tasks injected into the prompt
+- A structured JSON output schema (`WORKER_RESPONSE_SCHEMA`)
+- Tool access scoped to the task type (`testing`/`validation` agents get `Bash`; others get file-write tools only)
+
+Worker responses are either `WorkerResponse` (success) or `WorkerTerminateResponse` (task failed).
+
+### Execution flow
+
+```
+User prompt
+  → OrchestratorCore.run()
+  → Lead agent clarifies (HITL) + emits first plan chunk
+  → Planner persists rooms / tasks / assignments to SQLite
+  → HITL plan-approval checkpoint (if HITL mode)
+  → For each runnable task (respecting dependencies and parallel groups):
+      → Fetch ChromaDB context
+      → Create git worktree on branch zeno/<session_id>/<task_id>
+      → WorkerAdapter.dispatch() → SDK query
+      → Commit worker changes in worktree
+      → Merge worktree branch back to base branch
+      → Save diary entry to ChromaDB; save metrics + artifacts to SQLite
+      → Mark task complete
+  → At each chunk boundary:
+      → HITL checkpoint: approve / revise / cancel
+      → If approved: lead.continue_plan() → next chunk appended to active plan
+  → Session marked COMPLETED
+  → Input loop returns; user can submit next prompt or /quit
+```
+
+## Core concepts
 
 | Term | Meaning |
 |------|---------|
-| **`vault`** | Per-project namespace, derived from the working directory name (slugified) and stored in SQLite (`vaults` table). |
-| **`room`** | A lead-defined topic area under a vault (e.g. `auth`, `frontend`), stored in SQLite (`rooms` table). |
-| **`trace`** | One semantic-searchable entry stored in ChromaDB (typically one per completed task). |
-| **`log`** | A structured briefing authored by an agent after task completion; stored as the trace document. |
-| **`session`** | One user-submitted task line persisted to SQLite (`sessions` table). |
-| **`execution_plan`** | A plan revision produced by the lead agent, persisted to SQLite (`execution_plans`, `tasks`, `task_dependencies`). |
+| **vault** | Per-project namespace derived from the working directory name (slugified), stored in SQLite. |
+| **room** | A lead-defined topic area under a vault (e.g. `backend`, `frontend`), stored in SQLite. |
+| **trace** | One semantic-searchable entry in ChromaDB — typically one diary entry per completed task. |
+| **log** | Structured agent diary entry (`summary`, `decisions`, `assumptions`, `open_issues`, `room`); stored as the trace document. |
+| **session** | One user-submitted task line persisted to SQLite (`sessions` table). |
+| **execution_plan** | A plan revision produced by the lead agent, persisted across `execution_plans`, `tasks`, and `task_dependencies` tables. |
+| **chunk** | One `ExecutionPlanResponse` emitted by the lead; `is_final: false` means more chunks follow. |
+| **parallel_group** | A single uppercase letter (`A`–`Z`) shared by tasks that can run concurrently. |
+| **checkpoint** | A HITL gate persisted to the `checkpoints` table; supports approve / revise / cancel. |
 
 ## Persistence
 
-- **SQLite (orchestrator state)**: default path is **`<cwd>/.zeno/zeno.db`** (override via `ZENO_DATABASE_URL`).
-- **ChromaDB (memory)**: local persistence under **`<cwd>/.zeno/mind/chroma/`**, one collection per vault named **`zeno_<vaultSlug>`**.
+| Store | Path | Purpose |
+|-------|------|---------|
+| SQLite | `<cwd>/.zeno/zeno.db` | Orchestrator state: sessions, plans, tasks, agents, assignments, metrics, checkpoints, artifacts |
+| ChromaDB | `<cwd>/.zeno/mind/chroma/` | Semantic memory: one collection per vault (`zeno_<vaultSlug>`) |
+| Config | `~/.zeno/config.toml` | CLI user config (model, API keys, defaults) |
 
-## Database layer (SQLite)
-
-Zeno stores orchestration state under `zeno/db/` using **SQLAlchemy 2.x (async)**.
-
-### Terminology
-
-| Term | Meaning |
-|------|---------|
-| **`zeno/db/`** | Database package: engine, ORM models, repository, migrations. |
-| **`Db*` models** | SQLAlchemy ORM classes (`DbSession`, `DbTask`, …) — the `Db` prefix marks **persistence-layer** types so they are not confused with domain/orchestrator types later. |
-| **`sessions`** | Top-level run: user task submission, cwd, raw prompt, `ExecutionMode` (`yolo` \| `hitl`), lifecycle status. |
-| **`execution_plans`** | One decomposition graph per plan revision; linked to a session. Revisions increment when a plan is revised. |
-| **`tasks`** | Atomic work units (title, description, type, status, priority, optional parallel group, HITL checkpoint flag, result summary). |
-| **`task_dependencies`** | Directed edges: `task_id` depends on `depends_on_task_id`. |
-| **`agents`** | Registered agents: stable `name`, `type` (lead / coding / …), `system_prompt`. |
-| **`agent_assignments`** | Links a **task** to an **`agents`** row for one dispatch attempt (`started_at` / `completed_at`, assignment status). Provider/mode/type live on `agents`, not duplicated here. |
-| **`task_metrics`** | Token and timing counts (and artifact counts) attached to a **completed** assignment row. |
-| **`checkpoints`** | HITL checkpoint history (`presented` / `response` JSON payloads). |
-| **`artifacts`** | File paths touched on disk, derived from agent artifact lists. |
-| **`repository.py`** | All async DB operations in one module (`create_session`, `get_runnable_tasks`, …). |
-
-### Agents and assignments
-
-Register an agent once (`create_agent`), then attach work to it with **`create_assignment(task_id, session_id, agent_id)`**. Helpers include **`get_agent`**, **`get_agent_by_name`** (avoid duplicate names if you treat `name` as unique), and **`get_agent_with_assignments`** (eager-loads assignment history for resumption-style reads).
-
-In code, `create_agent(..., agent_type=...)` maps to the SQL column **`type`** (Python `type` is reserved for the builtin).
-
-### Default database location
-
-If **`ZENO_DATABASE_URL`** is not set, Zeno uses a file under the **process current working directory**:
-
-- **`<cwd>/.zeno/zeno.db`**
-
-The `.zeno/` directory is created as needed. That directory is listed in `.gitignore` so local databases are not committed.
-
-Phase 1 **CLI user config** still lives under the home directory (`~/.zeno/config.toml`); only the **default SQLite file** for Phase 3 is cwd-relative unless you override it with `ZENO_DATABASE_URL`.
-
-Override explicitly when you want a different file or path:
+Override the SQLite path:
 
 ```bash
 export ZENO_DATABASE_URL="sqlite+aiosqlite:////absolute/path/to/zeno.db"
 ```
 
-### Migrations (Alembic)
+## Database migrations
 
-From the **repository root** (where `alembic.ini` lives), after setting `ZENO_DATABASE_URL` if you are not using the default:
+From the repo root:
 
 ```bash
 alembic upgrade head
 ```
 
-Revision scripts live under `zeno/db/migrations/versions/`.
+Migration scripts live under `zeno/db/migrations/versions/`.
 
-Initial revision: **`b86554c1b399`** (full schema). Follow-up: **`f3d402b3bd47`** adds the **`agents`** table and refactors **`agent_assignments`** to reference **`agent_id`** (drops duplicated `agent_type` / `provider` / `mode` on assignments). That migration **deletes all rows in `agent_assignments`** before altering SQLite tables (no automatic backfill from old columns).
+## Environment variables
 
-### Smoke test (repository + dependency logic)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ZENO_DATABASE_URL` | `<cwd>/.zeno/zeno.db` | SQLite connection string |
+| `ORCHESTRATOR_TIMEOUT_SECONDS` | `60` | Per-task agent dispatch timeout |
+| `ZENO_LEAD_RESUME_SEND_PROMPT` | `""` | Set to `1`/`true` to re-send the system prompt on lead session resume |
 
-Uses a **temporary** SQLite file (does not use your default `./.zeno/zeno.db`):
+## Smoke tests
 
 ```bash
+# Database layer
 python -m zeno.db.smoke_test
-```
 
-### Dependencies
-
-Database-related runtime dependencies are declared in `pyproject.toml` (`sqlalchemy[asyncio]`, `aiosqlite`, `alembic`).
-
-## Phase 4 (agent memory layer)
-
-Phase 4 adds an embedded **ChromaDB** memory layer under `zeno/memory/` that can persist and retrieve agent-authored context across sessions.
-
-### Persistence
-
-- **SQLite**: vaults/rooms are stored in the relational DB.
-- **ChromaDB**: embedded local persistence under:
-  - **`<cwd>/.zeno/mind/chroma/`**
-- **Collections**: one collection per vault, named:
-  - **`zeno_<vaultSlug>`**
-
-### Adapter contract changes
-
-Agent responses support an optional `log` block. Zeno stores this as a memory `trace` document after task completion.
-
-### Smoke test (memory)
-
-Runs against a temporary SQLite file and a temporary working directory; saves one trace and verifies retrieval:
-
-```bash
+# Memory layer
 python -m zeno.memory.smoke_test
+
+# Bare orchestrator (Phase 6)
+python -m zeno.orchestrator.smoke_phase6
+
+# Compile check
+python -m compileall -q zeno
 ```
 
-### Retrieval notes
+## Project layout
 
-- **`search_traces(..., room=None)`**: `room` is optional and only applied as a filter when explicitly provided.
-- **`get_agent_logs(...)`**: history can be scoped broadly (by `agent_type`) or narrowly (by `agent_id`), and always includes the `vault` filter.
-
-### Dependencies
-
-Memory-layer runtime dependencies are declared in `pyproject.toml` (notably `chromadb`).
-
-## Phase 5 (lead agent contracts)
-
-Phase 5 formalizes the **lead agent request/response** contracts and adds a persisted orchestrator state enum. No orchestrator execution logic is implemented in this phase—only the models and validation that later phases will build on.
-
-### Contracts
-
-Defined in `zeno/agents/models.py`:
-
-- **Clarification flow**:
-  - `ClarificationQuestion`
-  - `ClarificationResponse` (`type="clarification"`)
-- **Execution planning**:
-  - `RoomDefinition`
-  - `TaskDefinition`
-  - `ExecutionPlanResponse` (`type="execution_plan"`, includes required `log`)
-- **Lead agent request**:
-  - `LeadAgentRequest` (includes `memory_context` as a lightweight `AgentContext` mirror model; the orchestrator converts `MemContext → AgentContext`)
-- **Validation**:
-  - `validate_lead_response(...) -> list[str]` enforces discriminator correctness, dependency/room consistency, parallel group format, required log, and rejects clarification responses in YOLO mode.
-
-### Orchestrator state (persisted)
-
-- **Enum**: `zeno/core/enums.py` defines `OrchestratorState` (shared primitive).
-- **DB**: `sessions.orchestrator_state` is stored in SQLite with default `INITIALIZING`.
-- **Repository helpers**:
-  - `update_orchestrator_state(session_id, state)`
-  - `get_orchestrator_state(session_id)`
-
-### Smoke test (contracts)
-
-```bash
-./.venv/bin/python -m compileall -q zeno
+```
+zeno/
+  agents/
+    lead/           ← lead agent adapter, composer, prompt layers
+    worker/         ← worker agent adapter, composer
+    models.py       ← shared request/response contracts and JSON schemas
+  cli/              ← Typer CLI, Rich display, input handling
+  core/             ← config, enums (ExecutionMode, OrchestratorState, LeadAgentStage)
+  db/               ← SQLAlchemy 2.x async engine, ORM models, repository, Alembic migrations
+  memory/           ← ChromaDB store, retrieval, MemLog/MemTrace/MemVault models
+  orchestrator/
+    core.py         ← OrchestratorCore: main run loop, parallel dispatch, HITL, chunked planning
+    planner.py      ← ExecutionPlanner: persists plans/rooms/tasks to SQLite
+    session.py      ← session init, workspace prep, teardown
+    git.py          ← worktree create/commit/merge/cleanup helpers
+    errors.py       ← typed exception hierarchy
 ```
 
-## Phase 8A (lead agent foundation)
+## License
 
-Phase 8A introduces the lead agent prompt architecture and a unified lead response schema (clarification/execution/terminate), plus a persistent lead-agent subprocess adapter under `zeno/agents/lead/`.
-
-## Phase 8B (lead agent ↔ orchestrator integration)
-
-Phase 8B wires the lead agent into the orchestrator: the lead agent produces an execution plan, the orchestrator persists it to SQLite (rooms/tasks/dependencies/assignments), supports a HITL clarification loop, and routes worker dispatch by provider.
-
-### Chunked (lazy) planning
-
-The lead can emit the work in **chunks** instead of one monolithic plan:
-
-- **`ExecutionPlanResponse.is_final`**: when `false`, the orchestrator expects another chunk after the current one finishes.
-- **Persistence**: later chunks are **appended** to the same `DbExecutionPlan` (priorities continue after existing tasks). Dependencies may reference task ids from earlier chunks via an in-memory id map during the session.
-- **Prefetch**: while a non-final chunk runs, the orchestrator may start **`continue_plan`** in the background so the next chunk is ready at the boundary.
-- **HITL**:
-  - There is **no** upfront “approve the entire plan” gate.
-  - **`checkpoint_before`** on a task (or parallel group) triggers a human checkpoint immediately before that work runs (skipped in YOLO).
-  - At each **chunk boundary** (before appending the prefetched next chunk), HITL can approve, revise (lead revision with a DB task snapshot), or cancel.
-- **Resume**: `OrchestratorCore.resume()` still runs remaining runnable tasks on the active plan; task-level checkpoints apply to work not yet dispatched.
-
-Lead prompts under `zeno/agents/lead/prompts/layers/` include **`stage_continuation.md`** and updates to **`stage_initial.md`**, **`stage_revision.md`**, **`planning_rules.md`**, and **`response_format.md`** for this model.
-
-## Phase 6 (bare orchestrator)
-
-Phase 6 introduces the first **end-to-end orchestrator** under `zeno/orchestrator/`. It is intentionally minimal: one session, one task, one agent, one worktree, one merge.
-
-### What it does
-
-- Initializes the session (creates `./.zeno/`, ensures git, initializes the memory vault, creates SQLite session).
-- Ensures the repo has at least one commit (creates an empty initial commit if needed) so worktree branches can merge back cleanly.
-- Creates a git worktree under `./.zeno/worktrees/<session_id>/<task_id>` and a branch `zeno/<session_id>/<task_id>`.
-- Dispatches a worker agent, saves metrics + artifacts to SQLite, and saves a memory trace to ChromaDB.
-- Stages + commits any worker changes inside the worktree, then merges the worktree branch back to the current branch, then cleans up the worktree and branch.
-- Marks the session as completed (or failed on first error).
-
-Worker responses support two outcomes via a `type` discriminator:
-
-- `type: success`: normal completion (summary, artifacts, log)
-- `type: terminate`: the worker could not complete the task; the orchestrator marks the task failed and cleans up the worktree.
-
-### Smoke test (orchestrator)
-
-Run from the repository root, using the repo-local venv:
-
-```bash
-./.venv/bin/python -m zeno.orchestrator.smoke_phase6
-```
-
-Optional settings:
-
-- `ORCHESTRATOR_TIMEOUT_SECONDS`: overrides agent dispatch timeout for the orchestrator (default: 60).
-
-## Phase 7 (CLI and orchestrator)
-
-The `zeno` command starts an **interactive** session: one long-lived `OrchestratorCore`, a new SQLite `DbSession` per task line you enter, slash commands (`/quit`, `/status`, `/help`), and Rich line-based progress. Default execution mode is HITL; pass `--yolo` for YOLO.
-
-```bash
-zeno
-zeno --yolo
-```
-
-The CLI is intended to be the primary entrypoint.
-
+See [LICENSE](LICENSE).

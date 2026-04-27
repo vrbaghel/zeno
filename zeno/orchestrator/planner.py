@@ -28,7 +28,8 @@ class ExecutionPlanner:
         plan: DbExecutionPlan | None = None,
         task_id_map: dict[str, uuid.UUID] | None = None,
     ) -> DbExecutionPlan:
-        errs = validate_lead_response(response)
+        id_map = task_id_map if task_id_map is not None else {}
+        errs = validate_lead_response(response, known_task_ids=set(id_map.keys()))
         if errs:
             raise ValidationError("Lead agent response failed validation", detail="\n".join(errs))
 
@@ -39,8 +40,6 @@ class ExecutionPlanner:
             len(response.rooms),
             plan is not None,
         )
-
-        id_map = task_id_map if task_id_map is not None else {}
         activate_new_plan = plan is None
 
         # 2) Create plan (or reuse for lazy chunk append)

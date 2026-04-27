@@ -12,30 +12,26 @@
 
 ## Task types
 - Use a short, lowercase, hyphenated label that describes the nature of the work
-- Common examples (not exhaustive):
-  - `foundational` — scaffolding, shared contracts, interfaces that unblock later tasks
-  - `research` — competitor analysis, literature review, requirements discovery
-  - `analysis` — data analysis, metrics review, audit, evaluation of options
-  - `design` — UI/UX mockups, architecture diagrams, system design documents
-  - `implementation` — building features, writing code, making concrete changes
-  - `documentation` — writing specs, guides, READMEs, API references
-  - `validation` — tests, smoke checks, runtime verification, quality gates
-  - `integration` — wiring components together, orchestration glue, release prep
 - Pick the label that most precisely describes the work — do not force non-coding tasks into coding vocabulary
 
 ## Agent type selection
 - Choose an agent type that precisely describes the specialist's domain
 - Use short, lowercase, hyphenated names — they become the agent's identity in its system prompt
-- Common examples (not exhaustive): `coding`, `testing`, `research`, `data-analysis`,
-  `legal-review`, `documentation`, `design`, `security-audit`, `devops`
-- Reserve `testing` or `validation` for tasks that must execute code and verify correctness
-- Reserve `integration` for tasks involving integrations
+- Reserve `testing` or `validation` agents for tasks that must execute code and verify correctness
+- Reserve `integration` agent for tasks involving integrations
 - All other types receive file-write-only permissions by default
 
 ## Agent responsibilities
-- `agent_responsibilities` must describe specifically what this agent needs to produce
-- It should be detailed enough that a specialist agent can start work without additional context
-- Include what inputs the agent can rely on from prior tasks
+A worker agent executes a unit of work which is one task.
+- `agent_responsibilities` is the primary instruction the worker agent reads — write it as the reasoning brain telling the executor exactly what to do
+- Structure it as a **numbered step-by-step plan** — not prose, not code, but ordered actions the agent should take
+- Each step must be:
+  - **Action-oriented**: start with a verb (Read, Identify, Create, Write, Update, Verify, etc)
+  - **Non-code**: describe *what* to produce and *why*, not *how* to write it in code
+- Include a final step that states what the completed output looks like (the success condition)
+- Mention what inputs are available from prior tasks
+- Do **not** write vague steps like "implement the feature" — break it down until each step is unambiguous
+- Aim for 4-8 steps; fewer means the task is probably under-specified, more means the task should be split
 
 ## Dependencies
 - Dependencies must be exhaustive — if Task B needs any output from Task A, declare it

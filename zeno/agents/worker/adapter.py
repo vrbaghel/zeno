@@ -104,10 +104,9 @@ class WorkerAdapter:
 
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Task"],
             permission_mode="acceptEdits",
             model="claude-haiku-4-5-20251001",
-            max_turns=30,
             output_format=WORKER_RESPONSE_SCHEMA,
             cwd=self.working_directory,
         )

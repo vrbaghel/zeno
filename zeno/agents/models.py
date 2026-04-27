@@ -305,6 +305,8 @@ class CheckpointContent(BaseModel):
 
 def validate_lead_response(
     response: ExecutionPlanResponse,
+    *,
+    known_task_ids: set[str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     if response.type != "execution_plan":
@@ -320,6 +322,7 @@ def validate_lead_response(
 
     room_names = {r.name for r in response.rooms}
     task_ids = {t.id for t in response.tasks}
+    all_known_ids = task_ids | (known_task_ids or set())
 
     for t in response.tasks:
         if t.parallel_group is not None:
@@ -330,7 +333,7 @@ def validate_lead_response(
                 )
 
         for dep in t.depends_on:
-            if dep not in task_ids:
+            if dep not in all_known_ids:
                 errors.append(f"task {t.id}: depends_on references unknown task id {dep!r}")
 
         if t.room not in room_names:

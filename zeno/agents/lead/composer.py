@@ -65,6 +65,7 @@ def compose_user_message(stage: LeadAgentStage, context) -> str:
 
     parts: list[str] = [
         _load_layer(stage_file).strip(),
+        _load_layer("response_format.md").strip(),
         render_stage_context(stage, context).strip(),
     ]
     if stage == LeadAgentStage.INITIAL:

@@ -19,7 +19,6 @@ from zeno.agents.models import (
     LEAD_AGENT_OUTPUT_SCHEMA,
     TaskStatusEntry,
     TerminateResponse,
-    validate_lead_response,
 )
 from zeno.core.enums import ExecutionMode, LeadAgentStage
 from zeno.orchestrator.errors import LeadAgentTerminationError, ParseError, ValidationError
@@ -147,9 +146,6 @@ class LeadAgentAdapter:
                 "Bash",
                 "Write",
                 "Edit",
-                "Read",
-                "Glob",
-                "Grep",
                 "WebSearch",
                 "WebFetch",
                 "Task",
@@ -276,10 +272,6 @@ class LeadAgentAdapter:
 
         if otype == "execution_plan":
             plan = ExecutionPlanResponse(**output)
-            errors = validate_lead_response(plan)
-            if errors:
-                logger.error("Lead plan validation failed | errors=%s", "; ".join(errors))
-                raise ValidationError("Invalid execution plan response", detail="; ".join(errors))
             logger.info("Lead agent plan received | tasks=%d", len(plan.tasks))
             return plan
 

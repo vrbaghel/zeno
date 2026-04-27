@@ -138,6 +138,75 @@ async def cleanup_worktree(
     logger.debug("Worktree cleanup | path=%s branch=%s", worktree_path, branch_name)
 
 
+async def abort_merge(working_directory: str) -> None:
+    """Abort an in-progress conflicting merge, restoring the working tree."""
+    root = str(Path(working_directory).resolve())
+    rc, out, err = await _run_git(["merge", "--abort"], cwd=root)
+    if rc != 0:
+        logger.warning("merge --abort failed (ignored) | %s", (out + "\n" + err).strip())
+
+
+async def merge_branch_in_worktree(
+    worktree_path: str,
+    branch_name: str,
+    task_title: str,
+) -> bool:
+    """
+    Merge `branch_name` into the current checkout at `worktree_path`.
+
+    Returns True if the merge completed cleanly.
+    Returns False if there are conflicts (working tree is left in the conflicted
+    MERGING state so a conflict-resolution pass can follow).
+    Raises MergeError for any other git failure.
+    """
+    msg = f"zeno: integrate {task_title}"
+    rc, out, err = await _run_git(
+        ["-c", "commit.gpgsign=false", "merge", "--no-ff", branch_name, "-m", msg],
+        cwd=worktree_path,
+    )
+    if rc == 0:
+        logger.info("Clean merge | branch=%s worktree=%s", branch_name, worktree_path)
+        return True
+    combined = (out + "\n" + err).strip()
+    if "CONFLICT" in combined or "Automatic merge failed" in combined:
+        logger.warning("Merge conflict detected | branch=%s worktree=%s", branch_name, worktree_path)
+        return False
+    raise MergeError(f"Failed to merge {branch_name}", detail=combined)
+
+
+async def get_conflicted_files(worktree_path: str) -> list[str]:
+    """Return paths of files that have unresolved merge conflicts."""
+    root = str(Path(worktree_path).resolve())
+    rc, out, _ = await _run_git(["diff", "--name-only", "--diff-filter=U"], cwd=root)
+    if rc != 0 or not out.strip():
+        return []
+    return [p.strip() for p in out.splitlines() if p.strip()]
+
+
+async def commit_resolved_merge(worktree_path: str, message: str) -> None:
+    """Stage all files and finalise a conflict-resolved merge commit."""
+    root = str(Path(worktree_path).resolve())
+    rc, out, err = await _run_git(["add", "-A"], cwd=root)
+    if rc != 0:
+        raise MergeError("Failed to stage conflict resolutions", detail=(out + "\n" + err).strip())
+    rc2, out2, err2 = await _run_git(
+        ["-c", "commit.gpgsign=false", "commit", "--no-edit"],
+        cwd=root,
+    )
+    if rc2 != 0:
+        # Fall back to an explicit message commit if --no-edit fails.
+        rc3, out3, err3 = await _run_git(
+            ["-c", "commit.gpgsign=false", "commit", "-m", message],
+            cwd=root,
+        )
+        if rc3 != 0:
+            raise MergeError(
+                "Failed to commit conflict resolution",
+                detail=(out3 + "\n" + err3).strip(),
+            )
+    logger.info("Conflict resolution committed | worktree=%s", worktree_path)
+
+
 async def get_merge_target_branch(repo_root: str) -> str:
     """
     Branch in the main repo that worktrees fork from (current checkout, else main/master).

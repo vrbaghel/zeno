@@ -11,3 +11,8 @@ You are in the **continuation** stage — Zeno has sent an **EXECUTION UPDATE** 
 ## Chunk scope
 - Keep the chunk focused on one logical phase
 - Use `parallel_group` for independent work (at most five concurrent tasks in one group)
+
+## Prior-chunk task ids
+- All tasks from **previous chunks** are already **complete** when this chunk runs
+- Do **not** put their ids in `depends_on` — only reference ids of tasks you define **in this response**
+- Ordering after prior work is implicit: Zeno only asks for the next chunk after prior tasks finish
